@@ -1,6 +1,4 @@
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+@import "tailwindcss";
 
 :root {
   --background: #0f0f13;
@@ -36,8 +34,15 @@ body {
 
 /* Animations */
 @keyframes pulse-slow {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.8; }
+
+  0%,
+  100% {
+    opacity: 1;
+  }
+
+  50% {
+    opacity: 0.8;
+  }
 }
 
 .animate-pulse-slow {
@@ -45,8 +50,15 @@ body {
 }
 
 @keyframes slide-up {
-  from { transform: translateY(20px); opacity: 0; }
-  to { transform: translateY(0); opacity: 1; }
+  from {
+    transform: translateY(20px);
+    opacity: 0;
+  }
+
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
 }
 
 .animate-slide-up {
@@ -57,13 +69,16 @@ body {
 ::-webkit-scrollbar {
   width: 8px;
 }
+
 ::-webkit-scrollbar-track {
   background: transparent;
 }
+
 ::-webkit-scrollbar-thumb {
   background: #3f3f46;
   border-radius: 4px;
 }
+
 ::-webkit-scrollbar-thumb:hover {
   background: #52525b;
 }
@@ -73,6 +88,7 @@ body {
   border: 2px dashed var(--border);
   transition: all 0.3s ease;
 }
+
 .drop-zone.active {
   border-color: #8b5cf6;
   background: rgba(139, 92, 246, 0.1);
