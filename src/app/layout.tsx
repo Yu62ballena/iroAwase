@@ -20,20 +20,23 @@ const comfortaa = Comfortaa({
 
 export const metadata: Metadata = {
   title: "iroAwase | AI Color Copy & Paste",
-  description: "Transfer color grading and aesthetics from one photo to another instantly. Free AI-powered tool for photographers and creators.",
-  keywords: ["color transfer", "photo editing", "grading", "AI", "iroAwase", "photography tool"],
+  description: "お気に入りの写真の色調を、あなたの写真へ瞬時にコピー。フォトグラファーやクリエイターのための無料AIカラーグレーディングツール。",
+  keywords: ["色補正", "カラーグレーディング", "写真編集", "AI", "iroAwase", "色調コピー"],
   authors: [{ name: "yu62ballena" }],
   metadataBase: new URL("https://iro-awase.vercel.app"),
+  alternates: {
+    canonical: "/",
+  },
   openGraph: {
     title: "iroAwase | AI Color Copy & Paste",
-    description: "Instantly transfer the color world of your favorite photo to your own images.",
+    description: "お手本写真の色調を、自分の写真へ瞬時にコピーして再現。登録不要で使える無料AIツール。",
     url: "https://iro-awase.vercel.app",
     siteName: "iroAwase",
     images: [
       {
-        url: "/logo.png",
-        width: 512,
-        height: 512,
+        url: "/logo.png", // metadataBaseに基づき絶対パスに変換されます
+        width: 1200,
+        height: 630,
         alt: "iroAwase Logo",
       },
     ],
@@ -43,10 +46,9 @@ export const metadata: Metadata = {
   twitter: {
     card: "summary_large_image",
     title: "iroAwase | AI Color Copy & Paste",
-    description: "Instantly transfer color grading between photos.",
+    description: "写真の色調を、別の写真へ瞬時にコピー。登録不要・ブラウザで完結。",
     images: ["/logo.png"],
   },
-  viewport: "width=device-width, initial-scale=1, maximum-scale=1",
 };
 
 export default function RootLayout({
