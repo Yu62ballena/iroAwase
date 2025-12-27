@@ -34,10 +34,10 @@ export const metadata: Metadata = {
     siteName: "iroAwase",
     images: [
       {
-        url: "/logo.png", // metadataBaseに基づき絶対パスに変換されます
+        url: "/og-image.jpg",
         width: 1200,
         height: 630,
-        alt: "iroAwase Logo",
+        alt: "iroAwase Preview",
       },
     ],
     locale: "ja_JP",
@@ -47,7 +47,7 @@ export const metadata: Metadata = {
     card: "summary_large_image",
     title: "iroAwase | AI Color Copy & Paste",
     description: "写真の色調を、別の写真へ瞬時にコピー。登録不要・ブラウザで完結。",
-    images: ["/logo.png"],
+    images: ["/og-image.jpg"],
   },
 };
 
