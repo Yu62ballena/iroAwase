@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import JSZip from 'jszip';
 
 // --- Types ---
@@ -18,9 +18,6 @@ interface ResultState {
 	originalUrl: string;
 	resultUrl: string;
 	intensity: number; // 0-100, default 50
-	// Internal data needed for re-processing
-	// We don't store full pixel data here to avoid React state lag, 
-	// but we use an ID to look it up in a ref.
 	id: number;
 }
 
@@ -30,15 +27,87 @@ interface ProcessStatus {
 	progress: number;
 }
 
-// --- Constants ---
+// --- Constants & Translations ---
 
 const RESIZE_LONG_EDGE = 3000;
-const PREVIEW_EDGE = 1000; // Smaller for fast preview updates
+const PREVIEW_EDGE = 1000;
 const MAX_TARGET_FILES = 10;
 const MAX_FILE_SIZE_MB = 15;
 
 const ACCEPTED_EXTENSIONS = ['.jpg', '.jpeg', '.png', '.webp', '.heic', '.heif'];
 const DISPLAY_ACCEPTED_FORMATS = "JPG, PNG, WEBP, HEIC";
+
+// Translations
+type Language = 'ja' | 'en';
+
+const TRANSLATIONS = {
+	ja: {
+		subtitle: "写真の色調を、別の写真へ瞬時にコピー。",
+		refTitle: "① お手本画像",
+		targetTitle: "② 補正する画像",
+		targetCount: "枚選択中",
+		changeRef: "変更する",
+		dropRef: "ここにドロップ\nまたはクリックしてアップロード",
+		dropRefSub: "クリックしてアップロード",
+		dropTarget: `最大${MAX_TARGET_FILES}枚までドロップ可能\nまたはクリックしてアップロード`,
+		dropTargetSub: "クリックしてアップロード",
+		btnAdjust: "色調を適用", // Concise Japanese
+		btnProcessing: "処理中...",
+		btnDownloadZip: "まとめてダウンロード (.zip) 📦",
+		btnReset: "リセットして最初に戻る ↺",
+		resultsTitle: "変換結果",
+		labelOriginal: "元画像",
+		labelStandard: "標準",
+		labelIntense: "強め",
+		msgInvalidExt: "対応していないファイル形式です: ",
+		msgTooLarge: "ファイルサイズが大きすぎます（最大15MB）",
+		msgHeicFail: "HEICの変換に失敗しました",
+		msgLoadFail: "画像の読み込みに失敗しました",
+		msgNoValid: "有効な画像が選択されていません",
+		msgZipFail: "ZIP作成に失敗しました",
+		statusAnalyzing: "参照画像を解析中...",
+		statusProcessing: "画像処理中...",
+		statusDone: "完了!",
+		statusGenZip: "高解像度画像を生成中...",
+		statusCreatingZip: "ZIPファイルを作成中...",
+		before: "変更前",
+		after: "変更後",
+		add: "+ 追加"
+	},
+	en: {
+		subtitle: "Transfer the color grade to multiple photos instantly.",
+		refTitle: "① Reference Image",
+		targetTitle: "② Target Images",
+		targetCount: "selected",
+		changeRef: "Change Reference",
+		dropRef: "Drop reference here\nor click to upload",
+		dropRefSub: "or click to upload",
+		dropTarget: `Drop up to ${MAX_TARGET_FILES} images\nor click to upload`,
+		dropTargetSub: "or click to upload",
+		btnAdjust: "Adjust Colors",
+		btnProcessing: "Processing...",
+		btnDownloadZip: "Download All as ZIP (.zip) 📦",
+		btnReset: "Reset All ↺",
+		resultsTitle: "Processing Results",
+		labelOriginal: "Original",
+		labelStandard: "Standard",
+		labelIntense: "Intense",
+		msgInvalidExt: "Unsupported format: ",
+		msgTooLarge: "File too large (Max 15MB)",
+		msgHeicFail: "HEIC conversion failed",
+		msgLoadFail: "Failed to load image",
+		msgNoValid: "No valid images selected",
+		msgZipFail: "ZIP creation failed",
+		statusAnalyzing: "Analyzing reference...",
+		statusProcessing: "Processing image...",
+		statusDone: "Done!",
+		statusGenZip: "Generating high-res images...",
+		statusCreatingZip: "Creating ZIP...",
+		before: "Before",
+		after: "After",
+		add: "+ Add"
+	}
+};
 
 // Standard Reinhard matrices
 const MAT_RGB2LMS = [
@@ -101,7 +170,6 @@ const resizeImageCanvas = (img: HTMLImageElement, longEdge: number = 2400): { ca
 
 // --- Math & Color Logic ---
 
-// Pre-calculate gamma tables for speed
 const TABLE_sRGBToLinear = new Float32Array(256);
 const TABLE_linearToSRGB = new Uint8Array(4096);
 
@@ -193,16 +261,20 @@ const computeStats = (ctx: CanvasRenderingContext2D, width: number, height: numb
 // --- Component ---
 
 export default function ColorTransfer() {
+	const [language, setLanguage] = useState<Language>('ja');
 	const [reference, setReference] = useState<ImageState | null>(null);
 	const [targets, setTargets] = useState<ImageState[]>([]);
 	const [results, setResults] = useState<ResultState[]>([]);
 	const [processStatus, setProcessStatus] = useState<ProcessStatus>({ isProcessing: false, message: '', progress: 0 });
 	const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
+	// Get translation object helper
+	const t = TRANSLATIONS[language];
+
 	// Auto-scroll ref
 	const resultsRef = useRef<HTMLDivElement>(null);
 
-	// Cache for heavy data to support real-time slider updates
+	// Cache
 	const imageCache = useRef<{
 		[id: number]: {
 			ctx: CanvasRenderingContext2D, // Original preview context (resized)
@@ -215,6 +287,27 @@ export default function ColorTransfer() {
 
 	// Throttled update for slider
 	const processingRef = useRef<{ [id: number]: boolean }>({});
+
+	// Detect user language on mount
+	useEffect(() => {
+		const lang = navigator.language || navigator.languages[0];
+		if (lang && !lang.toLowerCase().startsWith('ja')) {
+			setLanguage('en');
+		} else {
+			setLanguage('ja');
+		}
+	}, []);
+
+	// Reset Handler
+	const handleReset = () => {
+		setReference(null);
+		setTargets([]);
+		setResults([]);
+		setProcessStatus({ isProcessing: false, message: '', progress: 0 });
+		setErrorMessage(null);
+		setImageCache({});
+		window.scrollTo({ top: 0, behavior: 'smooth' });
+	};
 
 	const validateAndProcessFile = async (file: File): Promise<File | Blob | null> => {
 		// 1. Check Extension
@@ -240,10 +333,7 @@ export default function ColorTransfer() {
 					toType: "image/jpeg",
 					quality: 0.9
 				});
-				// heic2any can return Blob or Blob[]
-				if (Array.isArray(convertedBlob)) {
-					return convertedBlob[0];
-				}
+				if (Array.isArray(convertedBlob)) return convertedBlob[0];
 				return convertedBlob;
 			} catch (err) {
 				console.error("HEIC conversion failed", err);
@@ -272,18 +362,18 @@ export default function ColorTransfer() {
 		const unsupportedFiles = filesArray.filter(f => !ACCEPTED_EXTENSIONS.some(ext => f.name.toLowerCase().endsWith(ext)));
 		if (unsupportedFiles.length > 0) {
 			const names = unsupportedFiles.map(f => f.name).join(', ');
-			setErrorMessage(`Supported formats: ${DISPLAY_ACCEPTED_FORMATS}. Skipped unsupported files: ${names}`);
+			setErrorMessage(`${t.msgInvalidExt}${names}`);
 		}
 
 		if (type === 'reference') {
 			const originalFile = filesArray[0];
 
-			setProcessStatus({ isProcessing: true, message: 'Loading reference...', progress: 0 });
+			setProcessStatus({ isProcessing: true, message: t.statusAnalyzing, progress: 0 });
 
 			const processedFile = await validateAndProcessFile(originalFile);
 
 			if (!processedFile) {
-				if (!errorMessage) setErrorMessage("Invalid file or size limit exceeded.");
+				if (!errorMessage) setErrorMessage(t.msgTooLarge);
 				setProcessStatus({ isProcessing: false, message: '', progress: 0 });
 				return;
 			}
@@ -297,14 +387,14 @@ export default function ColorTransfer() {
 				setReference({ file: fileObj, url, element: img, width: img.width, height: img.height });
 			} catch (err) {
 				console.error("Reference load error:", err);
-				setErrorMessage("Failed to load reference image. The file may be broken or corrupted.");
+				setErrorMessage(t.msgLoadFail);
 				URL.revokeObjectURL(url);
 			}
 			setProcessStatus({ isProcessing: false, message: '', progress: 0 });
 
 		} else {
 			// Target: Multi-select
-			setProcessStatus({ isProcessing: true, message: 'Loading images...', progress: 0 });
+			setProcessStatus({ isProcessing: true, message: t.statusProcessing, progress: 0 });
 
 			const newTargets: ImageState[] = [];
 			const failedLoads: string[] = [];
@@ -329,13 +419,12 @@ export default function ColorTransfer() {
 			}
 
 			if (failedLoads.length > 0) {
-				const msg = `Failed to load: ${failedLoads.join(', ')}. Files may be corrupted.`;
+				const msg = `${t.msgLoadFail}: ${failedLoads.join(', ')}`;
 				setErrorMessage(prev => prev ? `${prev} | ${msg}` : msg);
 			}
 
 			if (newTargets.length === 0 && filesArray.length > 0 && failedLoads.length === 0 && unsupportedFiles.length === 0) {
-				// If everything failed silently (e.g. validateAndProcessFile caught everything)
-				if (!errorMessage) setErrorMessage("No valid images selected.");
+				if (!errorMessage) setErrorMessage(t.msgNoValid);
 			} else {
 				setTargets(prev => [...prev, ...newTargets].slice(0, MAX_TARGET_FILES));
 			}
@@ -396,7 +485,7 @@ export default function ColorTransfer() {
 	const executeColorTransfer = async () => {
 		if (!reference || targets.length === 0) return;
 
-		setProcessStatus({ isProcessing: true, message: 'Analyzing reference...', progress: 5 });
+		setProcessStatus({ isProcessing: true, message: t.statusAnalyzing, progress: 5 });
 		setImageCache({}); // Clear cache
 
 		try {
@@ -409,7 +498,7 @@ export default function ColorTransfer() {
 				const currentProgress = 10 + Math.round((i / targets.length) * 85);
 				setProcessStatus({
 					isProcessing: true,
-					message: `Processing image ${i + 1} of ${targets.length}...`,
+					message: `${t.statusProcessing} (${i + 1}/${targets.length})`,
 					progress: currentProgress
 				});
 
@@ -449,7 +538,7 @@ export default function ColorTransfer() {
 			}
 
 			setResults(newResults);
-			setProcessStatus({ isProcessing: false, message: 'Done!', progress: 100 });
+			setProcessStatus({ isProcessing: false, message: t.statusDone, progress: 100 });
 
 			// Auto scroll to results
 			setTimeout(() => {
@@ -496,7 +585,7 @@ export default function ColorTransfer() {
 	const handleDownloadZip = async () => {
 		if (!reference || targets.length === 0 || results.length === 0) return;
 
-		setProcessStatus({ isProcessing: true, message: 'Generating high-res images for ZIP...', progress: 10 });
+		setProcessStatus({ isProcessing: true, message: t.statusGenZip, progress: 10 });
 
 		try {
 			const zip = new JSZip();
@@ -507,7 +596,7 @@ export default function ColorTransfer() {
 				const res = results[i];
 				setProcessStatus({
 					isProcessing: true,
-					message: `Rendering ${targets[i].file.name} (Full Size)...`,
+					message: `${res.name}...`,
 					progress: 10 + Math.round((i / targets.length) * 80)
 				});
 
@@ -530,29 +619,50 @@ export default function ColorTransfer() {
 				zip.file(targets[i].file.name.replace(/\.[^/.]+$/, "") + "_adjusted.jpg", data, { base64: true });
 			}
 
-			setProcessStatus({ isProcessing: true, message: 'Creating ZIP...', progress: 95 });
+			setProcessStatus({ isProcessing: true, message: t.statusCreatingZip, progress: 95 });
 			const content = await zip.generateAsync({ type: 'blob' });
 			const link = document.createElement('a');
 			link.href = URL.createObjectURL(content);
 			link.download = "color_adjusted_images.zip";
 			link.click();
 
-			setProcessStatus({ isProcessing: false, message: 'Complete!', progress: 100 });
+			setProcessStatus({ isProcessing: false, message: t.statusDone, progress: 100 });
 		} catch (e) {
 			console.error(e);
-			setErrorMessage("ZIP creation failed.");
+			setErrorMessage(t.msgZipFail);
 			setProcessStatus({ isProcessing: false, message: '', progress: 0 });
 		}
 	};
 
 	return (
-		<div className="w-full md:w-[90%] lg:w-[85%] max-w-[1800px] mx-auto py-8 space-y-8">
+		<div className="w-full md:w-[90%] lg:w-[85%] max-w-[1800px] mx-auto py-8 space-y-8 relative">
+			{/* Language Switcher */}
+			<div className="absolute top-0 right-4 md:right-0">
+				<div className="flex bg-gray-800/50 backdrop-blur-sm rounded-lg p-1 text-xs font-bold border border-gray-700/50">
+					<button
+						onClick={() => setLanguage('ja')}
+						className={`px-3 py-1.5 rounded-md transition-all ${language === 'ja' ? 'bg-indigo-500 text-white shadow-md' : 'text-gray-400 hover:text-white'}`}
+					>
+						JP
+					</button>
+					<button
+						onClick={() => setLanguage('en')}
+						className={`px-3 py-1.5 rounded-md transition-all ${language === 'en' ? 'bg-indigo-500 text-white shadow-md' : 'text-gray-400 hover:text-white'}`}
+					>
+						EN
+					</button>
+				</div>
+			</div>
+
 			{/* Header */}
-			<div className="text-center space-y-2">
-				<h1 className="text-4xl md:text-5xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-indigo-400 to-purple-400">
-					Color Copy-Paste
-				</h1>
-				<p className="text-gray-400">Transfer the color grade to multiple photos instantly.</p>
+			<div className="flex flex-col items-center gap-2 mt-8 md:mt-0 pb-4">
+				<div className="flex items-center justify-center gap-3 md:gap-4 select-none">
+					<img src="/logo.png" alt="iroAwase Logo" className="h-10 w-10 md:h-16 md:w-16 object-contain" />
+					<h1 className="text-3xl md:text-5xl text-white tracking-wider pb-1" style={{ fontFamily: 'var(--font-comfortaa)' }}>
+						iroAwase
+					</h1>
+				</div>
+				<p className="text-gray-400 text-sm md:text-base">{t.subtitle}</p>
 			</div>
 
 			{/* Main Drop Zones */}
@@ -560,7 +670,7 @@ export default function ColorTransfer() {
 				{/* Reference */}
 				<div className="flex flex-col gap-2">
 					<h2 className="text-gray-300 text-sm flex items-center justify-between">
-						<span className="flex items-center gap-2"><span className="opacity-70">①</span> Reference Image</span>
+						<span className="flex items-center gap-2">{t.refTitle}</span>
 						<span className="text-[10px] text-gray-500 border border-gray-700 rounded px-1.5 py-0.5">{DISPLAY_ACCEPTED_FORMATS}</span>
 					</h2>
 					<div
@@ -574,14 +684,13 @@ export default function ColorTransfer() {
 							<div className="flex flex-col items-center justify-center w-full h-full p-6 gap-3">
 								<img src={reference.url} alt="Reference" className="max-w-full max-h-[85%] object-contain shadow-sm rounded-sm z-10" />
 								<p className="text-xs text-gray-600 font-medium bg-white/50 px-2 py-1 rounded backdrop-blur-sm group-hover:bg-white/80 transition-colors z-10">
-									Change Reference
+									{t.changeRef}
 								</p>
 							</div>
 						) : (
 							<div className="flex flex-col items-center gap-1 pointer-events-none group-hover:scale-105 transition-transform duration-200">
-								<p className="text-sm font-medium transition-colors duration-200 group-hover:text-blue-600 text-center leading-relaxed">
-									Drop reference here<br />
-									<span className="underline decoration-transparent group-hover:decoration-blue-600 underline-offset-2 transition-all">or click to upload</span>
+								<p className="text-sm font-medium transition-colors duration-200 group-hover:text-blue-600 text-center leading-relaxed whitespace-pre-wrap">
+									{t.dropRef}<br />
 								</p>
 							</div>
 						)}
@@ -591,10 +700,10 @@ export default function ColorTransfer() {
 				{/* Target */}
 				<div className="flex flex-col gap-2">
 					<h2 className="text-gray-300 text-sm flex items-center justify-between">
-						<span className="flex items-center gap-2"><span className="opacity-70">②</span> Target Images (max {MAX_TARGET_FILES})</span>
+						<span className="flex items-center gap-2">{t.targetTitle}</span>
 						<div className="flex items-center gap-2">
 							<span className="text-[10px] text-gray-500 border border-gray-700 rounded px-1.5 py-0.5">{DISPLAY_ACCEPTED_FORMATS}</span>
-							{targets.length > 0 && <span className="text-xs text-indigo-400">{targets.length} selected</span>}
+							{targets.length > 0 && <span className="text-xs text-indigo-400">{targets.length} {t.targetCount}</span>}
 						</div>
 					</h2>
 					<div
@@ -613,15 +722,14 @@ export default function ColorTransfer() {
 										</div>
 									))}
 									<div className="aspect-square flex flex-col items-center justify-center border-2 border-dashed border-gray-400/50 rounded-lg text-[10px] text-gray-600 font-medium bg-white/30 hover:bg-white/50 transition-colors">
-										+ Add
+										{t.add}
 									</div>
 								</div>
 							</div>
 						) : (
 							<div className="flex flex-col items-center gap-1 pointer-events-none group-hover:scale-105 transition-transform duration-200">
-								<p className="text-sm font-medium transition-colors duration-200 group-hover:text-blue-600 text-center leading-relaxed">
-									Drop up to {MAX_TARGET_FILES} images<br />
-									<span className="underline decoration-transparent group-hover:decoration-blue-600 underline-offset-2 transition-all">or click to upload</span>
+								<p className="text-sm font-medium transition-colors duration-200 group-hover:text-blue-600 text-center leading-relaxed whitespace-pre-wrap">
+									{t.dropTarget}
 								</p>
 							</div>
 						)}
@@ -640,9 +748,9 @@ export default function ColorTransfer() {
 				<button
 					onClick={executeColorTransfer}
 					disabled={!reference || targets.length === 0 || processStatus.isProcessing}
-					className="px-32 py-6 rounded-xl font-bold text-2xl text-white shadow-xl bg-[#4299E1] hover:bg-[#3182CE] transition-all transform hover:-translate-y-1 disabled:opacity-50 disabled:cursor-not-allowed disabled:transform-none"
+					className="px-32 py-6 rounded-xl font-bold text-2xl text-white shadow-xl bg-[#4299E1] hover:bg-[#3182CE] transition-all transform hover:-translate-y-1 disabled:opacity-50 disabled:cursor-not-allowed disabled:transform-none whitespace-nowrap"
 				>
-					{processStatus.isProcessing ? 'Processing...' : 'Adjust All Colors'}
+					{processStatus.isProcessing ? t.btnProcessing : t.btnAdjust}
 				</button>
 
 				{/* Progress */}
@@ -666,34 +774,34 @@ export default function ColorTransfer() {
 			{results.length > 0 && (
 				<div ref={resultsRef} className="animate-slide-up space-y-8 pt-8 border-t border-gray-800 scroll-mt-8">
 					<div className="flex flex-col md:flex-row items-center justify-between gap-4 px-4">
-						<h3 className="text-3xl font-bold text-gray-200">Processing Results</h3>
+						<h3 className="text-3xl font-bold text-gray-200">{t.resultsTitle}</h3>
 						<button
 							onClick={handleDownloadZip}
 							disabled={processStatus.isProcessing}
-							className="w-full md:w-auto px-10 py-4 bg-white text-black rounded-lg font-bold hover:bg-gray-200 transition-all flex items-center justify-center gap-2 shadow-2xl active:scale-95"
+							className="w-full md:w-auto px-10 py-4 bg-white text-black rounded-lg font-bold hover:bg-gray-200 transition-all flex items-center justify-center gap-2 shadow-2xl active:scale-95 whitespace-nowrap"
 						>
-							Download All as ZIP (.zip) 📦
+							{t.btnDownloadZip}
 						</button>
 					</div>
 
-					<div className="space-y-12 pb-12">
+					<div className="space-y-12 pb-8">
 						{results.map((res, i) => (
 							<div key={i} className="space-y-6 bg-white/5 py-6 rounded-none md:rounded-3xl border-y md:border border-white/10 md:mx-4">
 								<div className="flex justify-between items-center px-6">
 									<h4 className="text-gray-400 font-medium">Image {i + 1}: {res.name}</h4>
 								</div>
 
-								{/* Result Comparison - Grid layout for better fit on all screens */}
+								{/* Result Comparison */}
 								<div className="flex flex-row items-center justify-center gap-2 md:gap-8 lg:gap-12 px-2 md:px-6">
 									{/* Before */}
 									<div className="flex flex-col items-center gap-3 flex-1">
 										<div className="relative group w-full">
 											<img src={res.originalUrl} className="w-full h-auto rounded-lg md:rounded-xl shadow-lg grayscale-[0.3] brightness-90" alt="Before" />
-											<span className="absolute top-2 left-2 md:top-4 md:left-4 bg-black/60 backdrop-blur-md text-white text-[10px] md:text-xs px-2 py-1 md:px-3 md:py-1.5 rounded-full font-bold uppercase tracking-wider">Before</span>
+											<span className="absolute top-2 left-2 md:top-4 md:left-4 bg-black/60 backdrop-blur-md text-white text-[10px] md:text-xs px-2 py-1 md:px-3 md:py-1.5 rounded-full font-bold uppercase tracking-wider">{t.before}</span>
 										</div>
 									</div>
 
-									{/* Arrow/Indicator - Hidden on small mobile to save space, or kept small */}
+									{/* Arrow */}
 									<div className="text-indigo-500/50 hidden sm:block">
 										<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2.5} stroke="currentColor" className="w-6 h-6 md:w-12 md:h-12">
 											<path strokeLinecap="round" strokeLinejoin="round" d="M13.5 4.5 21 12m0 0-7.5 7.5M21 12H3" />
@@ -704,7 +812,7 @@ export default function ColorTransfer() {
 									<div className="flex flex-col items-center gap-3 flex-1">
 										<div className="relative w-full">
 											<img src={res.resultUrl} className="w-full h-auto rounded-lg md:rounded-xl shadow-[0_20px_50px_rgba(66,153,225,0.2)]" alt="After" />
-											<span className="absolute top-2 left-2 md:top-4 md:left-4 bg-blue-500 text-white text-[10px] md:text-xs px-2 py-1 md:px-3 md:py-1.5 rounded-full font-bold uppercase tracking-wider ring-2 md:ring-4 ring-blue-500/20">After</span>
+											<span className="absolute top-2 left-2 md:top-4 md:left-4 bg-blue-500 text-white text-[10px] md:text-xs px-2 py-1 md:px-3 md:py-1.5 rounded-full font-bold uppercase tracking-wider ring-2 md:ring-4 ring-blue-500/20">{t.after}</span>
 										</div>
 									</div>
 								</div>
@@ -713,9 +821,9 @@ export default function ColorTransfer() {
 								<div className="max-w-[800px] mx-auto w-full pt-2 px-6">
 									<div className="flex flex-col gap-2">
 										<div className="flex justify-between text-xs md:text-sm text-gray-400 font-medium">
-											<span>Original</span>
-											<span className="text-blue-400">Standard</span>
-											<span>Intense</span>
+											<span>{t.labelOriginal}</span>
+											<span className="text-blue-400">{t.labelStandard}</span>
+											<span>{t.labelIntense}</span>
 										</div>
 										<div className="flex items-center gap-4">
 											<input
@@ -734,13 +842,21 @@ export default function ColorTransfer() {
 						))}
 					</div>
 
-					<div className="flex justify-center pt-4 px-4">
+					<div className="flex flex-col items-center justify-center pt-4 px-4 gap-8 pb-12">
 						<button
 							onClick={handleDownloadZip}
 							disabled={processStatus.isProcessing}
-							className="w-full md:w-auto px-16 py-6 bg-blue-600 text-white rounded-xl md:rounded-2xl font-bold text-lg md:text-xl hover:bg-blue-500 transition-all flex items-center justify-center gap-3 shadow-2xl shadow-blue-500/20 active:scale-95"
+							className="w-full md:w-auto px-16 py-6 bg-blue-600 text-white rounded-xl md:rounded-2xl font-bold text-lg md:text-xl hover:bg-blue-500 transition-all flex items-center justify-center gap-3 shadow-2xl shadow-blue-500/20 active:scale-95 whitespace-nowrap"
 						>
-							Download Result Images (.zip) 📥
+							{t.btnDownloadZip}
+						</button>
+
+						{/* Reset Button */}
+						<button
+							onClick={handleReset}
+							className="text-gray-500 hover:text-white transition-colors text-sm md:text-base font-medium flex items-center gap-2 px-4 py-2 rounded-lg hover:bg-white/10"
+						>
+							{t.btnReset}
 						</button>
 					</div>
 				</div>
