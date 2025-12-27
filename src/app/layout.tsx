@@ -19,8 +19,34 @@ const comfortaa = Comfortaa({
 });
 
 export const metadata: Metadata = {
-  title: "Color Copy-Paste | AI Color Transfer",
-  description: "Transfer color grading from one photo to another instantly using the Reinhard method.",
+  title: "iroAwase | AI Color Copy & Paste",
+  description: "Transfer color grading and aesthetics from one photo to another instantly. Free AI-powered tool for photographers and creators.",
+  keywords: ["color transfer", "photo editing", "grading", "AI", "iroAwase", "photography tool"],
+  authors: [{ name: "yu62ballena" }],
+  metadataBase: new URL("https://iro-awase.vercel.app"),
+  openGraph: {
+    title: "iroAwase | AI Color Copy & Paste",
+    description: "Instantly transfer the color world of your favorite photo to your own images.",
+    url: "https://iro-awase.vercel.app",
+    siteName: "iroAwase",
+    images: [
+      {
+        url: "/logo.png",
+        width: 512,
+        height: 512,
+        alt: "iroAwase Logo",
+      },
+    ],
+    locale: "ja_JP",
+    type: "website",
+  },
+  twitter: {
+    card: "summary_large_image",
+    title: "iroAwase | AI Color Copy & Paste",
+    description: "Instantly transfer color grading between photos.",
+    images: ["/logo.png"],
+  },
+  viewport: "width=device-width, initial-scale=1, maximum-scale=1",
 };
 
 export default function RootLayout({
@@ -29,7 +55,7 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en">
+    <html lang="ja">
       <body className={`${geistSans.variable} ${geistMono.variable} ${comfortaa.variable}`}>
         {children}
         <Analytics />
