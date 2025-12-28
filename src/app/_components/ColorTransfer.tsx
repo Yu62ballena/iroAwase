@@ -42,7 +42,7 @@ type Language = 'ja' | 'en';
 
 const TRANSLATIONS = {
 	ja: {
-		subtitle: "写真の色調を、別の写真へ瞬時にコピー。",
+		subtitle: "写真の色調を、別の写真へ瞬時にコピー",
 		refTitle: "① お手本画像",
 		targetTitle: "② 補正する画像",
 		targetCount: "枚選択中",
