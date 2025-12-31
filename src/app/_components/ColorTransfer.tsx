@@ -72,7 +72,18 @@ const TRANSLATIONS = {
 		statusCreatingZip: "ZIPファイルを作成中...",
 		before: "変更前",
 		after: "変更後",
-		add: "+ 追加"
+		add: "+ 追加",
+		menu_app_desc: "写真の色調を、別の写真へ瞬時にコピーするAIカラーグレーディングツール。",
+		menu_related: "関連ツール",
+		menu_karukusuru_desc: "画質そのまま、ファイルだけ軽くするツール。",
+		menu_open: "開く",
+		menu_about: "iroAwase について",
+		menu_privacy: "・画像はサーバーに保存されません",
+		menu_client_side: "・すべての処理はブラウザ上で完結します",
+		modal_reset_title: "全てリセットしますか？",
+		modal_reset_desc: "アップロードした画像と設定がすべて消去されます。この操作は取り消せません。",
+		modal_cancel: "キャンセル",
+		modal_confirm: "リセットする"
 	},
 	en: {
 		subtitle: "Transfer the color grade to multiple photos instantly.",
@@ -105,7 +116,18 @@ const TRANSLATIONS = {
 		statusCreatingZip: "Creating ZIP...",
 		before: "Before",
 		after: "After",
-		add: "+ Add"
+		add: "+ Add",
+		menu_app_desc: "AI color grading tool that instantly transfers color tones between photos.",
+		menu_related: "Related Tools",
+		menu_karukusuru_desc: "Reduce file size while keeping quality high.",
+		menu_open: "Open",
+		menu_about: "About iroAwase",
+		menu_privacy: "• Images are not saved on the server",
+		menu_client_side: "• All processing is done on your browser",
+		modal_reset_title: "Reset Everything?",
+		modal_reset_desc: "This will clear all uploaded images and settings. This action cannot be undone.",
+		modal_cancel: "Cancel",
+		modal_confirm: "Reset All"
 	}
 };
 
@@ -261,6 +283,8 @@ const computeStats = (ctx: CanvasRenderingContext2D, width: number, height: numb
 // --- Component ---
 
 export default function ColorTransfer() {
+	const [isMenuOpen, setIsMenuOpen] = useState(false);
+	const [isResetModalOpen, setIsResetModalOpen] = useState(false);
 	const [language, setLanguage] = useState<Language>('ja');
 	const [reference, setReference] = useState<ImageState | null>(null);
 	const [targets, setTargets] = useState<ImageState[]>([]);
@@ -298,15 +322,22 @@ export default function ColorTransfer() {
 		}
 	}, []);
 
-	// Reset Handler
-	const handleReset = () => {
+	// Reset Handler (Actual reset)
+	const performReset = () => {
 		setReference(null);
 		setTargets([]);
 		setResults([]);
 		setProcessStatus({ isProcessing: false, message: '', progress: 0 });
 		setErrorMessage(null);
 		setImageCache({});
+		setIsResetModalOpen(false);
 		window.scrollTo({ top: 0, behavior: 'smooth' });
+	};
+
+	const handleResetClick = () => {
+		if (reference || targets.length > 0) {
+			setIsResetModalOpen(true);
+		}
 	};
 
 	const validateAndProcessFile = async (file: File): Promise<File | Blob | null> => {
@@ -636,9 +667,153 @@ export default function ColorTransfer() {
 
 	return (
 		<div className="w-full md:w-[90%] lg:w-[85%] max-w-[1800px] mx-auto py-8 space-y-8 relative">
+			{/* Reset Confirmation Modal */}
+			{isResetModalOpen && (
+				<div className="fixed inset-0 z-[110] flex items-center justify-center p-4 animate-in fade-in duration-200">
+					<div
+						className="absolute inset-0 bg-black/60 backdrop-blur-sm"
+						onClick={() => setIsResetModalOpen(false)}
+					/>
+					<div className="relative bg-[#1e1e24]/90 backdrop-blur-xl border border-white/10 rounded-2xl p-6 md:p-8 max-w-md w-full shadow-[0_20px_50px_rgba(0,0,0,0.6)] animate-in zoom-in-95 duration-200 ring-1 ring-white/5">
+						<h3 className="text-xl font-bold text-white mb-2 tracking-tight">
+							{(t as any).modal_reset_title}
+						</h3>
+						<p className="text-gray-400 mb-8 leading-relaxed text-sm">
+							{(t as any).modal_reset_desc}
+						</p>
+						<div className="flex gap-3 justify-end">
+							<button
+								onClick={() => setIsResetModalOpen(false)}
+								className="px-4 py-2.5 rounded-xl text-gray-400 hover:text-white hover:bg-white/5 transition-all font-bold text-sm"
+							>
+								{(t as any).modal_cancel}
+							</button>
+							<button
+								onClick={performReset}
+								className="px-6 py-2.5 rounded-xl bg-gradient-to-r from-red-500 to-pink-600 hover:from-red-400 hover:to-pink-500 text-white font-bold shadow-lg shadow-red-900/40 transition-all transform hover:-translate-y-0.5 active:scale-95 text-sm"
+							>
+								{(t as any).modal_confirm}
+							</button>
+						</div>
+					</div>
+				</div>
+			)}
+
+			{/* Hamburger Menu Button */}
+			<div className="absolute top-0 left-4 md:left-0 z-50">
+				<button
+					onClick={() => setIsMenuOpen(true)}
+					className="p-2 text-white/50 hover:text-white transition-colors active:scale-95"
+					aria-label="Menu"
+				>
+					<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-8 h-8">
+						<path strokeLinecap="round" strokeLinejoin="round" d="M3.75 6.75h16.5M3.75 12h16.5m-16.5 5.25h16.5" />
+					</svg>
+				</button>
+			</div>
+
+			{/* Slide-in Menu Overlay & Content */}
+			{/* Overlay */}
+			<div
+				className={`fixed inset-0 bg-black/60 z-[60] transition-opacity duration-300 backdrop-blur-sm ${isMenuOpen ? "opacity-100 pointer-events-auto" : "opacity-0 pointer-events-none"}`}
+				onClick={() => setIsMenuOpen(false)}
+			/>
+
+			{/* Menu Panel */}
+			<div
+				className={`fixed inset-y-0 left-0 w-72 bg-[#0a0a0e]/95 backdrop-blur-xl z-[70] transform transition-transform duration-300 ease-in-out border-r border-white/10 shadow-2xl flex flex-col ${isMenuOpen ? "translate-x-0" : "-translate-x-full"}`}
+			>
+				{/* Close Button */}
+				<div className="p-4 flex justify-end">
+					<button
+						onClick={() => setIsMenuOpen(false)}
+						className="text-gray-400 hover:text-white transition-colors p-2 rounded-xl hover:bg-white/10"
+					>
+						<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-6 h-6">
+							<path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+						</svg>
+					</button>
+				</div>
+
+				{/* Content */}
+				<div className="px-6 pb-8 flex flex-col flex-grow overflow-y-auto custom-scrollbar">
+					{/* Top Content */}
+					<div className="space-y-8">
+						{/* Section 1: App Info */}
+						<div className="space-y-3">
+							<div className="flex items-center gap-3">
+								<img src="/logo.png" alt="iroAwase" className="w-8 h-8 object-contain" />
+								<h2 className="text-2xl font-bold text-white leading-none tracking-tight" style={{ fontFamily: 'var(--font-comfortaa)' }}>iroAwase</h2>
+							</div>
+							<p className="text-[10px] text-indigo-400 font-bold uppercase tracking-widest">v1.1</p>
+							<p className="text-sm text-gray-400 leading-relaxed font-medium">{(t as any).menu_app_desc}</p>
+						</div>
+
+						<div className="h-px bg-gradient-to-r from-transparent via-white/10 to-transparent" />
+
+						{/* Section 2: Related Tools */}
+						<div className="space-y-4">
+							<h3 className="text-[11px] font-bold text-gray-500 uppercase tracking-[0.2em]">{(t as any).menu_related}</h3>
+							<a
+								href="https://karuku-suru.vercel.app/"
+								target="_blank"
+								rel="noopener noreferrer"
+								className="group block bg-white/[0.03] rounded-2xl p-4 hover:bg-white/[0.08] transition-all border border-white/5 hover:border-indigo-500/30 shadow-lg"
+							>
+								<div className="flex items-center gap-4 mb-3">
+									<div className="w-10 h-10 bg-white/5 rounded-xl flex items-center justify-center p-2 group-hover:scale-110 transition-transform">
+										<img src="/karukusuru-logo.png" alt="karukuSuru" className="w-full h-full object-contain" />
+									</div>
+									<div>
+										<p className="text-white font-bold group-hover:text-indigo-400 transition-colors">karukuSuru</p>
+										<p className="text-[10px] text-gray-500 font-medium">Image Resizer & Optimizer</p>
+									</div>
+								</div>
+								<p className="text-xs text-gray-400 mb-4 leading-relaxed line-clamp-2">{(t as any).menu_karukusuru_desc}</p>
+								<div className="flex items-center justify-end">
+									<span className="text-[11px] text-indigo-400 group-hover:text-indigo-300 flex items-center font-bold gap-1 transition-colors">
+										{(t as any).menu_open}
+										<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2.5} stroke="currentColor" className="w-3 h-3">
+											<path strokeLinecap="round" strokeLinejoin="round" d="M13.5 6H5.25A2.25 2.25 0 003 8.25v10.5A2.25 2.25 0 005.25 21h10.5A2.25 2.25 0 0018 18.75V10.5m-10.5 6L21 3m0 0h-5.25M21 3v5.25" />
+										</svg>
+									</span>
+								</div>
+							</a>
+						</div>
+					</div>
+
+					{/* Bottom Content (About) */}
+					<div className="mt-auto pt-8">
+						<div className="h-px bg-gradient-to-r from-transparent via-white/10 to-transparent mb-8" />
+
+						{/* Section 3: About */}
+						<div className="space-y-6">
+							<h3 className="text-[11px] font-bold text-gray-500 uppercase tracking-[0.2em]">{(t as any).menu_about}</h3>
+							<div className="space-y-2.5">
+								<p className="text-xs text-gray-400 font-medium tracking-tight">{(t as any).menu_privacy}</p>
+								<p className="text-xs text-gray-400 font-medium tracking-tight">{(t as any).menu_client_side}</p>
+								<p className="pt-4 text-[10px] text-gray-600 font-mono tracking-tight uppercase">© 2025 CodeAtelier Yu</p>
+							</div>
+
+							<a
+								href="https://x.com/CodeAtelierYu"
+								target="_blank"
+								rel="noopener noreferrer"
+								className="inline-flex items-center gap-3 text-gray-500 hover:text-[#1d9bf0] transition-all p-2 -ml-2 rounded-xl hover:bg-[#1d9bf0]/5 group"
+							>
+								<svg viewBox="0 0 24 24" className="w-5 h-5 fill-current transition-transform group-hover:scale-110" aria-hidden="true">
+									<path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"></path>
+								</svg>
+								<span className="text-xs font-bold uppercase tracking-wider">Follow for updates</span>
+							</a>
+						</div>
+					</div>
+				</div>
+			</div>
+
 			{/* Language Switcher */}
-			<div className="absolute top-0 right-4 md:right-0">
-				<div className="flex bg-gray-800/50 backdrop-blur-sm rounded-lg p-1 text-xs font-bold border border-gray-700/50">
+			<div className="absolute top-0 right-4 md:right-0 z-50">
+				<div className="flex bg-white/5 backdrop-blur-md rounded-xl p-1 text-xs font-bold border border-white/10 shadow-2xl">
 					<button
 						onClick={() => setLanguage('ja')}
 						className={`px-3 py-1.5 rounded-md transition-all ${language === 'ja' ? 'bg-indigo-500 text-white shadow-md' : 'text-gray-400 hover:text-white'}`}
@@ -674,7 +849,7 @@ export default function ColorTransfer() {
 						<span className="text-[10px] text-gray-500 border border-gray-700 rounded px-1.5 py-0.5">{DISPLAY_ACCEPTED_FORMATS}</span>
 					</h2>
 					<div
-						className="bg-[#C4C4C4] rounded-2xl aspect-[3/2] relative flex flex-col items-center justify-center text-gray-700 overflow-hidden group cursor-pointer"
+						className="bg-white/5 backdrop-blur-sm rounded-3xl aspect-[3/2] relative flex flex-col items-center justify-center text-gray-300 overflow-hidden group cursor-pointer border border-white/10 transition-all hover:bg-white/10 hover:border-white/20"
 						onDragOver={(e) => e.preventDefault()}
 						onDrop={(e) => handleFileSelect(e, 'reference')}
 					>
@@ -682,14 +857,19 @@ export default function ColorTransfer() {
 
 						{reference ? (
 							<div className="flex flex-col items-center justify-center w-full h-full p-6 gap-3">
-								<img src={reference.url} alt="Reference" className="max-w-full max-h-[85%] object-contain shadow-sm rounded-sm z-10" />
-								<p className="text-xs text-gray-600 font-medium bg-white/50 px-2 py-1 rounded backdrop-blur-sm group-hover:bg-white/80 transition-colors z-10">
+								<img src={reference.url} alt="Reference" className="max-w-full max-h-[85%] object-contain shadow-2xl rounded-lg z-10" />
+								<p className="text-xs text-white font-medium bg-white/10 px-3 py-1.5 rounded-full backdrop-blur-md group-hover:bg-white/20 transition-colors z-10 border border-white/10">
 									{t.changeRef}
 								</p>
 							</div>
 						) : (
-							<div className="flex flex-col items-center gap-1 pointer-events-none group-hover:scale-105 transition-transform duration-200">
-								<p className="text-sm font-medium transition-colors duration-200 group-hover:text-blue-600 text-center leading-relaxed whitespace-pre-wrap">
+							<div className="flex flex-col items-center gap-4 pointer-events-none group-hover:scale-105 transition-transform duration-300">
+								<div className="w-16 h-16 rounded-full bg-white/5 flex items-center justify-center border border-white/10 text-white/30 group-hover:text-white/60 group-hover:border-white/20 transition-colors">
+									<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-8 h-8">
+										<path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
+									</svg>
+								</div>
+								<p className="text-sm font-medium text-gray-400 group-hover:text-white text-center leading-relaxed whitespace-pre-wrap">
 									{t.dropRef}<br />
 								</p>
 							</div>
@@ -707,28 +887,36 @@ export default function ColorTransfer() {
 						</div>
 					</h2>
 					<div
-						className="bg-[#C4C4C4] rounded-2xl aspect-[3/2] relative flex flex-col items-center justify-center text-gray-700 overflow-hidden group cursor-pointer"
+						className="bg-white/5 backdrop-blur-sm rounded-3xl aspect-[3/2] relative flex flex-col items-center justify-center text-gray-300 overflow-hidden group cursor-pointer border border-white/10 transition-all hover:bg-white/10 hover:border-white/20"
 						onDragOver={(e) => e.preventDefault()}
 						onDrop={(e) => handleFileSelect(e, 'target')}
 					>
 						<input type="file" accept={ACCEPTED_EXTENSIONS.join(',')} multiple onChange={(e) => handleFileSelect(e, 'target')} className="absolute inset-0 opacity-0 cursor-pointer z-20" />
 
 						{targets.length > 0 ? (
-							<div className="p-4 w-full h-full z-10 overflow-y-auto">
-								<div className="grid grid-cols-5 gap-2">
+							<div className="p-4 w-full h-full z-10 overflow-y-auto custom-scrollbar">
+								<div className="grid grid-cols-4 sm:grid-cols-5 gap-3">
 									{targets.map((tgt, i) => (
-										<div key={i} className="relative aspect-square bg-black/10 rounded-lg overflow-hidden border border-white/20 shadow-sm">
-											<img src={tgt.url} className="w-full h-full object-cover" alt={`target-${i}`} />
+										<div key={i} className="relative aspect-square bg-white/5 rounded-xl overflow-hidden border border-white/10 shadow-lg group/item">
+											<img src={tgt.url} className="w-full h-full object-cover transition-transform group-hover/item:scale-110" alt={`target-${i}`} />
+											<div className="absolute inset-0 bg-black/40 opacity-0 group-hover/item:opacity-100 transition-opacity flex items-center justify-center">
+												<span className="text-[10px] text-white font-bold">#{i + 1}</span>
+											</div>
 										</div>
 									))}
-									<div className="aspect-square flex flex-col items-center justify-center border-2 border-dashed border-gray-400/50 rounded-lg text-[10px] text-gray-600 font-medium bg-white/30 hover:bg-white/50 transition-colors">
+									<div className="aspect-square flex flex-col items-center justify-center border-2 border-dashed border-white/10 rounded-xl text-[10px] text-gray-500 font-medium bg-white/5 hover:bg-white/10 hover:border-white/20 transition-all">
 										{t.add}
 									</div>
 								</div>
 							</div>
 						) : (
-							<div className="flex flex-col items-center gap-1 pointer-events-none group-hover:scale-105 transition-transform duration-200">
-								<p className="text-sm font-medium transition-colors duration-200 group-hover:text-blue-600 text-center leading-relaxed whitespace-pre-wrap">
+							<div className="flex flex-col items-center gap-4 pointer-events-none group-hover:scale-105 transition-transform duration-300">
+								<div className="w-16 h-16 rounded-full bg-white/5 flex items-center justify-center border border-white/10 text-white/30 group-hover:text-white/60 group-hover:border-white/20 transition-colors">
+									<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-8 h-8">
+										<path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
+									</svg>
+								</div>
+								<p className="text-sm font-medium text-gray-400 group-hover:text-white text-center leading-relaxed whitespace-pre-wrap">
 									{t.dropTarget}
 								</p>
 							</div>
@@ -748,21 +936,29 @@ export default function ColorTransfer() {
 				<button
 					onClick={executeColorTransfer}
 					disabled={!reference || targets.length === 0 || processStatus.isProcessing}
-					className="px-32 py-6 rounded-xl font-bold text-2xl text-white shadow-xl bg-[#4299E1] hover:bg-[#3182CE] transition-all transform hover:-translate-y-1 disabled:opacity-50 disabled:cursor-not-allowed disabled:transform-none whitespace-nowrap"
+					className="px-32 py-6 rounded-2xl font-bold text-2xl text-white shadow-2xl bg-indigo-600 hover:bg-indigo-500 transition-all transform hover:-translate-y-1 active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed disabled:transform-none whitespace-nowrap border border-white/10"
 				>
-					{processStatus.isProcessing ? t.btnProcessing : t.btnAdjust}
+					{processStatus.isProcessing ? (
+						<span className="flex items-center gap-3">
+							<svg className="animate-spin h-6 w-6 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+								<circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+								<path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+							</svg>
+							{t.btnProcessing}
+						</span>
+					) : t.btnAdjust}
 				</button>
 
 				{/* Progress */}
-				{(processStatus.isProcessing || processStatus.progress > 0) && (
-					<div className="w-full max-w-[500px] space-y-2 pt-2 px-4">
-						<div className="flex justify-between text-sm font-medium text-gray-400">
+				{(processStatus.isProcessing || (processStatus.progress > 0 && processStatus.progress < 100)) && (
+					<div className="w-full max-w-[500px] space-y-3 pt-2 px-6 py-4 bg-white/5 backdrop-blur-md rounded-2xl border border-white/10 shadow-xl">
+						<div className="flex justify-between text-xs font-bold text-gray-300 uppercase tracking-widest">
 							<span>{processStatus.message}</span>
-							<span>{processStatus.progress}%</span>
+							<span className="text-indigo-400">{processStatus.progress}%</span>
 						</div>
-						<div className="h-3 w-full bg-gray-800 rounded-full overflow-hidden border border-gray-700">
+						<div className="h-2 w-full bg-white/5 rounded-full overflow-hidden border border-white/5">
 							<div
-								className="h-full bg-gradient-to-r from-blue-400 to-blue-600 transition-all duration-300 ease-out"
+								className="h-full bg-gradient-to-r from-indigo-500 to-purple-600 transition-all duration-500 ease-out shadow-[0_0_15px_rgba(99,102,241,0.5)]"
 								style={{ width: `${processStatus.progress}%` }}
 							/>
 						</div>
@@ -772,23 +968,19 @@ export default function ColorTransfer() {
 
 			{/* Result Area */}
 			{results.length > 0 && (
-				<div ref={resultsRef} className="animate-slide-up space-y-8 pt-8 border-t border-gray-800 scroll-mt-8">
-					<div className="flex flex-col md:flex-row items-center justify-between gap-4 px-4">
-						<h3 className="text-3xl font-bold text-gray-200">{t.resultsTitle}</h3>
-						<button
-							onClick={handleDownloadZip}
-							disabled={processStatus.isProcessing}
-							className="w-full md:w-auto px-10 py-4 bg-white text-black rounded-lg font-bold hover:bg-gray-200 transition-all flex items-center justify-center gap-2 shadow-2xl active:scale-95 whitespace-nowrap"
-						>
-							{t.btnDownloadZip}
-						</button>
+				<div ref={resultsRef} className="animate-slide-up space-y-8 pt-8 border-t border-gray-800 scroll-mt-8 text-center sm:text-left">
+					<div className="flex flex-col md:flex-row items-center justify-between gap-4 px-6 md:px-8">
+						<h3 className="text-3xl font-bold text-gray-200 tracking-tight">{t.resultsTitle}</h3>
 					</div>
 
 					<div className="space-y-12 pb-8">
 						{results.map((res, i) => (
-							<div key={i} className="space-y-6 bg-white/5 py-6 rounded-none md:rounded-3xl border-y md:border border-white/10 md:mx-4">
-								<div className="flex justify-between items-center px-6">
-									<h4 className="text-gray-400 font-medium">Image {i + 1}: {res.name}</h4>
+							<div key={i} className="space-y-6 bg-white/5 backdrop-blur-md py-8 rounded-3xl border border-white/10 md:mx-4 shadow-2xl transition-all hover:bg-white/[0.07] hover:border-white/20">
+								<div className="flex justify-between items-center px-8">
+									<h4 className="text-gray-300 font-bold flex items-center gap-2">
+										<span className="w-6 h-6 rounded-full bg-white/10 flex items-center justify-center text-[10px] text-white/50 border border-white/10">{i + 1}</span>
+										{res.name}
+									</h4>
 								</div>
 
 								{/* Result Comparison */}
@@ -818,45 +1010,69 @@ export default function ColorTransfer() {
 								</div>
 
 								{/* Slider Control */}
-								<div className="max-w-[800px] mx-auto w-full pt-2 px-6">
-									<div className="flex flex-col gap-2">
-										<div className="flex justify-between text-xs md:text-sm text-gray-400 font-medium">
-											<span>{t.labelOriginal}</span>
-											<span className="text-blue-400">{t.labelStandard}</span>
-											<span>{t.labelIntense}</span>
+								<div className="max-w-[800px] mx-auto w-full px-4 md:px-8">
+									<div className="bg-black/20 rounded-2xl p-4 md:p-6 border border-white/5">
+										<div className="flex justify-between items-center mb-4">
+											<span className="text-[10px] md:text-xs font-bold text-gray-400 uppercase tracking-widest leading-none">Adjustment Intensity</span>
 										</div>
-										<div className="flex items-center gap-4">
-											<input
-												type="range"
-												min="0"
-												max="100"
-												value={res.intensity}
-												onChange={(e) => handleIntensityChange(i, parseInt(e.target.value))}
-												className="w-full h-2 bg-gray-700 rounded-lg appearance-none cursor-pointer accent-blue-500 hover:accent-blue-400 touch-pan-x"
-											/>
-											<span className="w-8 text-center font-mono text-gray-300 text-sm">{res.intensity}</span>
+										<div className="flex flex-col gap-3">
+											<div className="flex justify-between text-[10px] text-gray-500 font-bold uppercase tracking-tighter px-1">
+												<span>{t.labelOriginal}</span>
+												<span className="text-indigo-400/80">{t.labelStandard}</span>
+												<span>{t.labelIntense}</span>
+											</div>
+											<div className="flex items-center gap-4">
+												<input
+													type="range"
+													min="0"
+													max="100"
+													value={res.intensity}
+													onChange={(e) => handleIntensityChange(i, parseInt(e.target.value))}
+													className="flex-1 h-1.5 bg-white/10 rounded-full appearance-none cursor-pointer accent-indigo-500 hover:accent-indigo-400 transition-all"
+												/>
+												<span className="w-10 text-right font-mono text-indigo-400 text-sm font-bold">{res.intensity}</span>
+											</div>
 										</div>
 									</div>
 								</div>
 							</div>
 						))}
 					</div>
+					<div className="h-40" />
+				</div>
+			)}
 
-					<div className="flex flex-col items-center justify-center pt-4 px-4 gap-8 pb-12">
+			{/* Fixed Download Bar - Outside all results space to avoid parent transforms */}
+			{results.length > 0 && (
+				<div className="fixed bottom-8 left-1/2 -translate-x-1/2 z-[100] w-[95%] max-w-[550px] animate-slide-up px-4 sm:px-0">
+					<div className="bg-[#1e1e24]/90 backdrop-blur-xl border border-white/15 rounded-2xl p-3 sm:p-4 shadow-[0_20px_50px_rgba(0,0,0,0.6)] flex items-center justify-between gap-3 sm:gap-4 overflow-hidden">
+						<div className="flex flex-col pl-2 hidden min-[400px]:flex">
+							<span className="text-[10px] text-gray-400 font-bold uppercase tracking-wider">Status</span>
+							<span className="text-xs sm:text-sm font-bold text-white flex items-center gap-2">
+								<span className="w-2 h-2 rounded-full bg-indigo-500 animate-pulse" />
+								{results.length} / {targets.length} {t.statusDone}
+							</span>
+						</div>
+
 						<button
 							onClick={handleDownloadZip}
 							disabled={processStatus.isProcessing}
-							className="w-full md:w-auto px-16 py-6 bg-blue-600 text-white rounded-xl md:rounded-2xl font-bold text-lg md:text-xl hover:bg-blue-500 transition-all flex items-center justify-center gap-3 shadow-2xl shadow-blue-500/20 active:scale-95 whitespace-nowrap"
+							className="flex-1 px-4 sm:px-8 py-3.5 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white rounded-xl font-bold transition-all flex items-center justify-center gap-2 shadow-lg shadow-indigo-500/30 active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed text-sm sm:text-base"
 						>
-							{t.btnDownloadZip}
+							<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2.5} stroke="currentColor" className="w-5 h-5">
+								<path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 0 0 5.25 21h13.5A2.25 2.25 0 0 0 21 18.75V16.5M16.5 12 12 16.5m0 0L7.5 12m4.5 4.5V3" />
+							</svg>
+							{t.btnDownloadZip.split(" (")[0].replace(" 📦", "")}
 						</button>
 
-						{/* Reset Button */}
 						<button
-							onClick={handleReset}
-							className="text-gray-500 hover:text-white transition-colors text-sm md:text-base font-medium flex items-center gap-2 px-4 py-2 rounded-lg hover:bg-white/10"
+							onClick={handleResetClick}
+							className="w-12 h-12 flex items-center justify-center bg-white/5 hover:bg-white/10 border border-white/10 text-white rounded-xl transition-all shadow-lg active:scale-95 shrink-0"
+							title={t.btnReset}
 						>
-							{t.btnReset}
+							<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-5 h-5">
+								<path strokeLinecap="round" strokeLinejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0 3.181 3.183a8.25 8.25 0 0 0 13.803-3.7M4.031 9.865a8.25 8.25 0 0 1 13.803-3.7l3.181 3.182m0-4.991v4.99" />
+							</svg>
 						</button>
 					</div>
 				</div>
