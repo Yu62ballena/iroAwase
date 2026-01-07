@@ -274,15 +274,19 @@ const computeStats = (ctx: CanvasRenderingContext2D, width: number, height: numb
 	const varL = lVals.reduce((a, c) => a + Math.pow(c - meanL, 2), 0) / n;
 	const varA = aVals.reduce((a, c) => a + Math.pow(c - meanA, 2), 0) / n;
 	const varB = bVals.reduce((a, c) => a + Math.pow(c - meanB, 2), 0) / n;
+	const stdL = Math.max(0.05, Math.sqrt(varL));
+	const stdA = Math.max(0.05, Math.sqrt(varA));
+	const stdB = Math.max(0.05, Math.sqrt(varB));
+
 	console.log('Target Stats:', {
 		mean: [meanL, meanA, meanB],
-		std: [Math.sqrt(varL), Math.sqrt(varA), Math.sqrt(varB)],
+		std: [stdL, stdA, stdB],
 		pixelCount: n,
 		totalPixels: width * height
 	});
 	return {
 		mean: [meanL, meanA, meanB],
-		std: [Math.sqrt(varL), Math.sqrt(varA), Math.sqrt(varB)]
+		std: [stdL, stdA, stdB]
 	};
 };
 
@@ -486,7 +490,8 @@ export default function ColorTransfer() {
 		const k = intensity / 50.0;
 
 		// Pre-calculate global constants for speed
-		const scaleL_std = (tgtStats.std[0] !== 0) ? Math.min(3.0, Math.max(0.3, refStats.std[0] / tgtStats.std[0])) : 1;
+
+		const scaleL_std = (tgtStats.std[0] !== 0) ? Math.min(2.5, Math.max(0.3, refStats.std[0] / tgtStats.std[0])) : 1;
 		const L_BOOST = 0.03;
 
 		const refSatLvl = (refStats.std[1] + refStats.std[2]) / 2;
@@ -494,9 +499,12 @@ export default function ColorTransfer() {
 		let globalSatScale_std = (tgtSatLvl !== 0) ? refSatLvl / tgtSatLvl : 1;
 		globalSatScale_std = Math.min(1.25, Math.max(0.3, globalSatScale_std));
 
+		// Brightness compensation for high intensity
+		const brightnessBoost = k > 1.0 ? (k - 1.0) * 0.05 : 0;
+
 		// Coefficients
 		const A_L = 1 + (scaleL_std - 1) * k;
-		const B_L = (refStats.mean[0] + L_BOOST - tgtStats.mean[0] * scaleL_std) * k;
+		const B_L = (refStats.mean[0] + L_BOOST + brightnessBoost - tgtStats.mean[0] * scaleL_std) * k;
 
 		const scaleSat = 1 + (globalSatScale_std - 1) * k;
 		const offsetSatA = tgtStats.mean[1] * (1 - scaleSat);
