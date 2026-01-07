@@ -793,7 +793,7 @@ export default function ColorTransfer() {
 								<img src="/logo.png" alt="iroAwase" className="w-8 h-8 object-contain" />
 								<h2 className="text-2xl font-bold text-white leading-none tracking-tight" style={{ fontFamily: 'var(--font-comfortaa)' }}>iroAwase</h2>
 							</div>
-							<p className="text-[10px] text-indigo-400 font-bold uppercase tracking-widest">v1.1</p>
+							<p className="text-[10px] text-indigo-400 font-bold uppercase tracking-widest">v1.2</p>
 							<p className="text-sm text-gray-400 leading-relaxed font-medium">{(t as any).menu_app_desc}</p>
 						</div>
 
