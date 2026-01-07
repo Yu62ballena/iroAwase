@@ -274,6 +274,12 @@ const computeStats = (ctx: CanvasRenderingContext2D, width: number, height: numb
 	const varL = lVals.reduce((a, c) => a + Math.pow(c - meanL, 2), 0) / n;
 	const varA = aVals.reduce((a, c) => a + Math.pow(c - meanA, 2), 0) / n;
 	const varB = bVals.reduce((a, c) => a + Math.pow(c - meanB, 2), 0) / n;
+	console.log('Target Stats:', {
+		mean: [meanL, meanA, meanB],
+		std: [Math.sqrt(varL), Math.sqrt(varA), Math.sqrt(varB)],
+		pixelCount: n,
+		totalPixels: width * height
+	});
 	return {
 		mean: [meanL, meanA, meanB],
 		std: [Math.sqrt(varL), Math.sqrt(varA), Math.sqrt(varB)]
