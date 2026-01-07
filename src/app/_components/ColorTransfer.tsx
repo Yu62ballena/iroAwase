@@ -487,41 +487,43 @@ export default function ColorTransfer() {
 		const outData = output.data;
 
 		// Calculate interpolation factor, 0-100 -> 0.0-2.0
-
 		const k = intensity / 50.0;
 		// Lチャンネル（明度）への影響を抑制する係数
-		// 強度が上がるほど、明度の変化は控えめにする（色は変えるが、明るさは元の画像を尊重）
 		const k_L = k > 1.0 ? 1.0 + (k - 1.0) * 0.6 : k;
 
 		// Pre-calculate global constants for speed
 
 		// 明度の分散スケーリング上限をさらに抑制 (2.5 -> 1.8)
-		// コントラストが付きすぎて暗部が潰れるのを防ぐ
 		const scaleL_std = (tgtStats.std[0] !== 0) ? Math.min(1.8, Math.max(0.3, refStats.std[0] / tgtStats.std[0])) : 1;
 		const L_BOOST = 0.03;
 
 		const refSatLvl = (refStats.std[1] + refStats.std[2]) / 2;
 		const tgtSatLvl = (tgtStats.std[1] + tgtStats.std[2]) / 2;
 
+		// 知覚的な明るさを計算 (ヘルムホルツ・コールラウシュ効果の考慮)
+		// 彩度(色の分散)が高いほど明るく感じる補正を入れる
+		const getPerceivedBrightness = (stats: ColorStats) => {
+			const saturation = Math.sqrt(Math.pow(stats.std[1], 2) + Math.pow(stats.std[2], 2));
+			return stats.mean[0] + saturation * 0.25;
+		};
+
+		const refPerceivedL = getPerceivedBrightness(refStats);
+		const tgtPerceivedL = getPerceivedBrightness(tgtStats);
+
 		// 分母が小さすぎる場合の保護を追加
 		let globalSatScale_std = refSatLvl / Math.max(0.15, tgtSatLvl);
 		// 制限範囲を緩和(0.5-1.2に変更)
 		globalSatScale_std = Math.min(1.2, Math.max(0.5, globalSatScale_std));
 
-		console.log('Saturation Scale:', {
-			refSatLvl,
-			tgtSatLvl,
-			rawScale: refSatLvl / Math.max(0.15, tgtSatLvl),
-			finalScale: globalSatScale_std
-		});
-
 		// Brightness compensation for high intensity
 		const brightnessBoost = k > 1.0 ? (k - 1.0) * 0.05 : 0;
 
 		// Coefficients
-		// 明度計算には k_L を使用
+		// 明度計算には k_L を使用し、ベースとなる明るさを「知覚的明度」に置き換え
 		const A_L = 1 + (scaleL_std - 1) * k_L;
-		const B_L = (refStats.mean[0] + L_BOOST + brightnessBoost - tgtStats.mean[0] * scaleL_std) * k_L;
+		// 以前: (refStats.mean[0] ... - tgtStats.mean[0])
+		// 今回: (refPerceivedL ... - tgtPerceivedL)
+		const B_L = (refPerceivedL + L_BOOST + brightnessBoost - tgtPerceivedL * scaleL_std) * k_L;
 
 		const scaleSat = 1 + (globalSatScale_std - 1) * k;
 		const offsetSatA = tgtStats.mean[1] * (1 - scaleSat);
