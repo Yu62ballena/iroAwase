@@ -487,11 +487,17 @@ export default function ColorTransfer() {
 		const outData = output.data;
 
 		// Calculate interpolation factor, 0-100 -> 0.0-2.0
+
 		const k = intensity / 50.0;
+		// Lチャンネル（明度）への影響を抑制する係数
+		// 強度が上がるほど、明度の変化は控えめにする（色は変えるが、明るさは元の画像を尊重）
+		const k_L = k > 1.0 ? 1.0 + (k - 1.0) * 0.6 : k;
 
 		// Pre-calculate global constants for speed
 
-		const scaleL_std = (tgtStats.std[0] !== 0) ? Math.min(2.5, Math.max(0.3, refStats.std[0] / tgtStats.std[0])) : 1;
+		// 明度の分散スケーリング上限をさらに抑制 (2.5 -> 1.8)
+		// コントラストが付きすぎて暗部が潰れるのを防ぐ
+		const scaleL_std = (tgtStats.std[0] !== 0) ? Math.min(1.8, Math.max(0.3, refStats.std[0] / tgtStats.std[0])) : 1;
 		const L_BOOST = 0.03;
 
 		const refSatLvl = (refStats.std[1] + refStats.std[2]) / 2;
@@ -513,8 +519,9 @@ export default function ColorTransfer() {
 		const brightnessBoost = k > 1.0 ? (k - 1.0) * 0.05 : 0;
 
 		// Coefficients
-		const A_L = 1 + (scaleL_std - 1) * k;
-		const B_L = (refStats.mean[0] + L_BOOST + brightnessBoost - tgtStats.mean[0] * scaleL_std) * k;
+		// 明度計算には k_L を使用
+		const A_L = 1 + (scaleL_std - 1) * k_L;
+		const B_L = (refStats.mean[0] + L_BOOST + brightnessBoost - tgtStats.mean[0] * scaleL_std) * k_L;
 
 		const scaleSat = 1 + (globalSatScale_std - 1) * k;
 		const offsetSatA = tgtStats.mean[1] * (1 - scaleSat);
