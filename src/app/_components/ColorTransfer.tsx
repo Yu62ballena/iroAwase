@@ -258,8 +258,8 @@ const computeStats = (ctx: CanvasRenderingContext2D, width: number, height: numb
 		const r = data[i];
 		const g = data[i + 1];
 		const b = data[i + 2];
-		if (r > 250 && g > 250 && b > 250) continue;
-		if (r < 5 && g < 5 && b < 5) continue;
+		// if (r > 250 && g > 250 && b > 250) continue; // Remove highlight filter
+		// if (r < 5 && g < 5 && b < 5) continue; // Remove shadow filter
 		const [l, a, bb] = rgb2lab(r, g, b);
 		lVals.push(l);
 		aVals.push(a);
@@ -274,9 +274,9 @@ const computeStats = (ctx: CanvasRenderingContext2D, width: number, height: numb
 	const varL = lVals.reduce((a, c) => a + Math.pow(c - meanL, 2), 0) / n;
 	const varA = aVals.reduce((a, c) => a + Math.pow(c - meanA, 2), 0) / n;
 	const varB = bVals.reduce((a, c) => a + Math.pow(c - meanB, 2), 0) / n;
-	const stdL = Math.max(0.05, Math.sqrt(varL));
-	const stdA = Math.max(0.05, Math.sqrt(varA));
-	const stdB = Math.max(0.05, Math.sqrt(varB));
+	const stdL = Math.sqrt(varL);
+	const stdA = Math.sqrt(varA);
+	const stdB = Math.sqrt(varB);
 
 	console.log('Target Stats:', {
 		mean: [meanL, meanA, meanB],
@@ -486,56 +486,71 @@ export default function ColorTransfer() {
 		const output = new ImageData(new Uint8ClampedArray(data), imgData.width, imgData.height);
 		const outData = output.data;
 
+
+
 		// Calculate interpolation factor, 0-100 -> 0.0-2.0
-		const k = intensity / 50.0;
-		// Lチャンネル（明度）への影響を抑制する係数
-		const k_L = k > 1.0 ? 1.0 + (k - 1.0) * 0.6 : k;
+		// ユーザーフィードバック: 強度30くらいがベストとのこと。
+		// 以前は 50.0 で割っていた (強度50 = k1.0)
+		// 今回は「強度50のときに、以前の強度30相当」になるように調整する。
+		// 30 / 50 = 0.6 なので、 50 / x = 0.6 -> x = 83.33...
+		// 約80.0で割れば、スライダー50のときに以前の0.625倍相当になり、マイルドになる。
+		const k = intensity / 80.0;
 
 		// Pre-calculate global constants for speed
+		// ターゲット画像の標準偏差が極端に小さい場合、倍率が暴走して色が破綻するのを防ぐため、
+		// 倍率に上限(CAP)を設ける。
+		const SCALE_CAP = 3.0; // 最大3倍まで（5.0から厳しくした）
 
-		// 明度の分散スケーリング上限をさらに抑制 (2.5 -> 1.8)
-		const scaleL_std = (tgtStats.std[0] !== 0) ? Math.min(1.8, Math.max(0.3, refStats.std[0] / tgtStats.std[0])) : 1;
-		const L_BOOST = 0.03;
+		// ■ ユーザー要望対応: 彩度(標準偏差)の上限キャップ
+		// お手本画像の彩度が強すぎる(stdが大きい)場合、その強さをそのまま適用すると色が破綻する。
+		// そのため、計算に使うお手本の彩度値に上限を設け、「彩度100のお手本が来ても50として扱う」ような処理を行う。
+		// Log空間なので値は小さい(0.15は安全側だが、青空などの綺麗な色が出にくいので0.18に緩和)
+		const REF_STD_CAP = 0.18;
 
-		const refSatLvl = (refStats.std[1] + refStats.std[2]) / 2;
-		const tgtSatLvl = (tgtStats.std[1] + tgtStats.std[2]) / 2;
+		const effectiveRefStdL = Math.min(refStats.std[0], REF_STD_CAP);
+		const effectiveRefStdA = Math.min(refStats.std[1], REF_STD_CAP);
+		const effectiveRefStdB = Math.min(refStats.std[2], REF_STD_CAP);
 
-		// 知覚的な明るさを計算 (ヘルムホルツ・コールラウシュ効果の考慮)
-		// 彩度(色の分散)が高いほど明るく感じる補正を入れる
-		const getPerceivedBrightness = (stats: ColorStats) => {
-			const saturation = Math.sqrt(Math.pow(stats.std[1], 2) + Math.pow(stats.std[2], 2));
-			return stats.mean[0] + saturation * 0.25;
-		};
+		// 生の倍率 (Cap済みのお手本stdを使用)
+		const rawScaleL = (tgtStats.std[0] > 0.01) ? Math.min(SCALE_CAP, effectiveRefStdL / tgtStats.std[0]) : 1;
+		const rawScaleA = (tgtStats.std[1] > 0.01) ? Math.min(SCALE_CAP, effectiveRefStdA / tgtStats.std[1]) : 1;
+		const rawScaleB = (tgtStats.std[2] > 0.01) ? Math.min(SCALE_CAP, effectiveRefStdB / tgtStats.std[2]) : 1;
 
-		const refPerceivedL = getPerceivedBrightness(refStats);
-		const tgtPerceivedL = getPerceivedBrightness(tgtStats);
+		// Soft Reinhard: コントラスト（stdの比）を完全に適用せず、元の画像との中間にする
+		// 例: 0.5 = 元のコントラストと、お手本のコントラストの中間
+		const BLEND_STD = 0.5;
+		const scaleL_std = 1.0 + (rawScaleL - 1.0) * BLEND_STD;
+		const scaleA_std = 1.0 + (rawScaleA - 1.0) * BLEND_STD;
+		const scaleB_std = 1.0 + (rawScaleB - 1.0) * BLEND_STD;
 
-		// 分母が小さすぎる場合の保護を追加
-		let globalSatScale_std = refSatLvl / Math.max(0.15, tgtSatLvl);
-		// 制限範囲を緩和(0.5-1.2に変更)
-		globalSatScale_std = Math.min(1.2, Math.max(0.5, globalSatScale_std));
+		console.log('Scaling Factors (Soft+RefCap):', { scaleL_std, scaleA_std, scaleB_std, refCap: REF_STD_CAP });
 
-		// Brightness compensation for high intensity
-		const brightnessBoost = k > 1.0 ? (k - 1.0) * 0.05 : 0;
+		// Soft Reinhard: 平均値のシフト（明るさ・色味の変更）も和らげる
+		// 1.0 = 完全にお手本に合わせる, 0.5 = 元の明るさを半分残す
+		const BLEND_MEAN_L = 0.5; // 白飛び抑制のため少し下げる (0.6 -> 0.5)
+		const BLEND_MEAN_C = 0.6; // 色味も6割程度
 
 		// Coefficients
-		// 明度計算には k_L を使用し、ベースとなる明るさを「知覚的明度」に置き換え
-		const A_L = 1 + (scaleL_std - 1) * k_L;
-		// 以前: (refStats.mean[0] ... - tgtStats.mean[0])
-		// 今回: (refPerceivedL ... - tgtPerceivedL)
-		const B_L = (refPerceivedL + L_BOOST + brightnessBoost - tgtPerceivedL * scaleL_std) * k_L;
+		const A_L = 1 + (scaleL_std - 1) * k;
+		const B_L = (refStats.mean[0] - tgtStats.mean[0] * scaleL_std) * k * BLEND_MEAN_L;
 
-		const scaleSat = 1 + (globalSatScale_std - 1) * k;
-		const offsetSatA = tgtStats.mean[1] * (1 - scaleSat);
-		const offsetSatB = tgtStats.mean[2] * (1 - scaleSat);
+		const A_a = 1 + (scaleA_std - 1) * k;
+		const B_a = (refStats.mean[1] - tgtStats.mean[1] * scaleA_std) * k * BLEND_MEAN_C;
+
+		const A_b = 1 + (scaleB_std - 1) * k;
+		const B_b = (refStats.mean[2] - tgtStats.mean[2] * scaleB_std) * k * BLEND_MEAN_C;
+
+		// Apply linear transform
+		// Note: 標準の式は L_new = (L_old - Tgt_Mean) * Scale + Ref_Mean
+		// 展開すると: L_new = L_old * Scale + (Ref_Mean - Tgt_Mean * Scale)
+		// 今回は後半のオフセット項(B_L, B_a, B_b)にBLEND係数を掛けて弱めている
 
 		for (let i = 0; i < outData.length; i += 4) {
 			const [l, a, b] = rgb2lab(outData[i], outData[i + 1], outData[i + 2]);
 
-			// Apply linear transform
 			const l_new = l * A_L + B_L;
-			const a_new = a * scaleSat + offsetSatA;
-			const b_new = b * scaleSat + offsetSatB;
+			const a_new = a * A_a + B_a;
+			const b_new = b * A_b + B_b;
 
 			const [r, g, bb] = lab2rgb(l_new, a_new, b_new);
 			outData[i] = r;
