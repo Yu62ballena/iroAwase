@@ -496,8 +496,18 @@ export default function ColorTransfer() {
 
 		const refSatLvl = (refStats.std[1] + refStats.std[2]) / 2;
 		const tgtSatLvl = (tgtStats.std[1] + tgtStats.std[2]) / 2;
-		let globalSatScale_std = (tgtSatLvl !== 0) ? refSatLvl / tgtSatLvl : 1;
-		globalSatScale_std = Math.min(1.25, Math.max(0.3, globalSatScale_std));
+
+		// 分母が小さすぎる場合の保護を追加
+		let globalSatScale_std = refSatLvl / Math.max(0.15, tgtSatLvl);
+		// 制限範囲を緩和(0.5-1.2に変更)
+		globalSatScale_std = Math.min(1.2, Math.max(0.5, globalSatScale_std));
+
+		console.log('Saturation Scale:', {
+			refSatLvl,
+			tgtSatLvl,
+			rawScale: refSatLvl / Math.max(0.15, tgtSatLvl),
+			finalScale: globalSatScale_std
+		});
 
 		// Brightness compensation for high intensity
 		const brightnessBoost = k > 1.0 ? (k - 1.0) * 0.05 : 0;
