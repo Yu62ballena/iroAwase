@@ -18,6 +18,7 @@ interface ResultState {
 	originalUrl: string;
 	resultUrl: string;
 	intensity: number; // 0-100, default 50
+	shadow: number; // 0-100, default 50 (Shadow Crush Strength)
 	id: number;
 }
 
@@ -131,27 +132,6 @@ const TRANSLATIONS = {
 	}
 };
 
-// Standard Reinhard matrices
-const MAT_RGB2LMS = [
-	0.3811, 0.5783, 0.0402,
-	0.1967, 0.7244, 0.0782,
-	0.0241, 0.1288, 0.8444
-];
-const MAT_LMS2RGB = [
-	4.4679, -3.5873, 0.1193,
-	-1.2186, 2.3809, -0.1624,
-	0.0497, -0.2439, 1.2045
-];
-const MAT_LMS2LAB = [
-	0.5774, 0.5774, 0.5774,
-	0.4082, 0.4082, -0.8165,
-	0.7071, -0.7071, 0.0000
-];
-const MAT_LAB2LMS = [
-	0.5774, 0.4082, 0.7071,
-	0.5774, 0.4082, -0.7071,
-	0.5774, -0.8165, 0.0000
-];
 
 // --- Helper Functions ---
 
@@ -209,38 +189,55 @@ const linearToSRGB = (x: number): number => {
 	return Math.round(Math.min(255, Math.max(0, val * 255)));
 };
 
-const rgb2lab = (r: number, g: number, b: number): [number, number, number] => {
+// Oklab Matrices (D65)
+// Referenced from https://bottosson.github.io/posts/oklab/
+
+const rgb2oklab = (r: number, g: number, b: number): [number, number, number] => {
+	// 1. Linear RGB
 	const rL = TABLE_sRGBToLinear[r];
 	const gL = TABLE_sRGBToLinear[g];
 	const bL = TABLE_sRGBToLinear[b];
 
-	const EPSILON = 1e-4;
-	const L = Math.max(EPSILON, MAT_RGB2LMS[0] * rL + MAT_RGB2LMS[1] * gL + MAT_RGB2LMS[2] * bL);
-	const M = Math.max(EPSILON, MAT_RGB2LMS[3] * rL + MAT_RGB2LMS[4] * gL + MAT_RGB2LMS[5] * bL);
-	const S = Math.max(EPSILON, MAT_RGB2LMS[6] * rL + MAT_RGB2LMS[7] * gL + MAT_RGB2LMS[8] * bL);
+	// 2. Linear RGB -> LMS (Oklab specific matrix)
+	const l_ = 0.4122214708 * rL + 0.5363325363 * gL + 0.0514459929 * bL;
+	const m_ = 0.2119034982 * rL + 0.6806995451 * gL + 0.1073969566 * bL;
+	const s_ = 0.0883024619 * rL + 0.2817188376 * gL + 0.6299787005 * bL;
 
-	const l_ = Math.log10(L);
-	const m_ = Math.log10(M);
-	const s_ = Math.log10(S);
+	// 3. Non-linear transform (cube root approximation)
+	const l__ = Math.cbrt(l_);
+	const m__ = Math.cbrt(m_);
+	const s__ = Math.cbrt(s_);
 
-	const l = MAT_LMS2LAB[0] * l_ + MAT_LMS2LAB[1] * m_ + MAT_LMS2LAB[2] * s_;
-	const a = MAT_LMS2LAB[3] * l_ + MAT_LMS2LAB[4] * m_ + MAT_LMS2LAB[5] * s_;
-	const b_ = MAT_LMS2LAB[6] * l_ + MAT_LMS2LAB[7] * m_ + MAT_LMS2LAB[8] * s_;
-	return [l, a, b_];
+	// 4. LMS -> Oklab
+	const L = 0.2104542553 * l__ + 0.7936177850 * m__ - 0.0040720468 * s__;
+	const a = 1.9779984951 * l__ - 2.4285922050 * m__ + 0.4505937099 * s__;
+	const b_val = 0.0259040371 * l__ + 0.7827717662 * m__ - 0.8086757660 * s__;
+
+	return [L, a, b_val];
 };
 
-const lab2rgb = (l: number, a: number, b: number): [number, number, number] => {
-	const l_ = MAT_LAB2LMS[0] * l + MAT_LAB2LMS[1] * a + MAT_LAB2LMS[2] * b;
-	const m_ = MAT_LAB2LMS[3] * l + MAT_LAB2LMS[4] * a + MAT_LAB2LMS[5] * b;
-	const s_ = MAT_LAB2LMS[6] * l + MAT_LAB2LMS[7] * a + MAT_LAB2LMS[8] * b;
-	const L = Math.pow(10, l_);
-	const M = Math.pow(10, m_);
-	const S = Math.pow(10, s_);
-	const rLine = MAT_LMS2RGB[0] * L + MAT_LMS2RGB[1] * M + MAT_LMS2RGB[2] * S;
-	const gLine = MAT_LMS2RGB[3] * L + MAT_LMS2RGB[4] * M + MAT_LMS2RGB[5] * S;
-	const bLine = MAT_LMS2RGB[6] * L + MAT_LMS2RGB[7] * M + MAT_LMS2RGB[8] * S;
-	return [linearToSRGB(rLine), linearToSRGB(gLine), linearToSRGB(bLine)];
+const oklab2rgb = (L: number, a: number, b: number): [number, number, number] => {
+	// 1. Oklab -> LMS
+	const l_ = L + 0.3963377774 * a + 0.2158037573 * b;
+	const m_ = L - 0.1055613458 * a - 0.0638541728 * b;
+	const s_ = L - 0.0894841775 * a - 1.2914855480 * b;
+
+	// 2. LMS non-linear inverse (cube)
+	const l__ = l_ * l_ * l_;
+	const m__ = m_ * m_ * m_;
+	const s__ = s_ * s_ * s_;
+
+	// 3. LMS -> Linear RGB
+	const rL = 4.0767416621 * l__ - 3.3077115913 * m__ + 0.2309699292 * s__;
+	const gL = -1.2684380046 * l__ + 2.6097574011 * m__ - 0.3413193965 * s__;
+	const bL = -0.0041960863 * l__ - 0.7034186147 * m__ + 1.7076147010 * s__;
+
+	return [linearToSRGB(rL), linearToSRGB(gL), linearToSRGB(bL)];
 };
+
+// Functions alias for compatibility with existing code
+const rgb2lab = rgb2oklab;
+const lab2rgb = oklab2rgb;
 
 interface ColorStats {
 	mean: [number, number, number];
@@ -321,6 +318,7 @@ export default function ColorTransfer() {
 
 	// Throttled update for slider
 	const processingRef = useRef<{ [id: number]: boolean }>({});
+	const workerRef = useRef<{ [id: number]: NodeJS.Timeout }>({});
 
 	// Detect user language on mount
 	useEffect(() => {
@@ -479,7 +477,8 @@ export default function ColorTransfer() {
 		imgData: ImageData,
 		refStats: ColorStats,
 		tgtStats: ColorStats,
-		intensity: number // 0 to 100, 50 = standard
+		intensity: number, // 0 to 100, 50 = standard
+		shadowStrength: number = 50 // 0 to 100, 50 = 50% crush, 0 = no crush, 100 = full crush
 	): ImageData => {
 		const data = imgData.data;
 		// Clone data for output (don't mutate original if cached)
@@ -495,6 +494,14 @@ export default function ColorTransfer() {
 		// 30 / 50 = 0.6 なので、 50 / x = 0.6 -> x = 83.33...
 		// 約80.0で割れば、スライダー50のときに以前の0.625倍相当になり、マイルドになる。
 		const k = intensity / 80.0;
+
+		// Shadow Crush Factor
+		// 0 (Light) -> 1.0 min factor (No darkening)
+		// 100 (Black) -> 0.0 min factor (Pitch black)
+		// ユーザー要望: スライダー65-70くらいがベストだった
+		// -> デフォルト50のときに、そのくらいの強度(x0.3付近)になるように係数1.4倍
+		let crushMinFactor = 1.0 - (shadowStrength / 100.0) * 1.4;
+		crushMinFactor = Math.max(0, crushMinFactor);
 
 		// Pre-calculate global constants for speed
 		// ターゲット画像の標準偏差が極端に小さい場合、倍率が暴走して色が破綻するのを防ぐため、
@@ -516,9 +523,12 @@ export default function ColorTransfer() {
 		const rawScaleA = (tgtStats.std[1] > 0.01) ? Math.min(SCALE_CAP, effectiveRefStdA / tgtStats.std[1]) : 1;
 		const rawScaleB = (tgtStats.std[2] > 0.01) ? Math.min(SCALE_CAP, effectiveRefStdB / tgtStats.std[2]) : 1;
 
+
+
 		// Soft Reinhard: コントラスト（stdの比）を完全に適用せず、元の画像との中間にする
 		// 例: 0.5 = 元のコントラストと、お手本のコントラストの中間
-		const BLEND_STD = 0.5;
+		// ユーザー要望に合わせ調整 (1.0 -> 0.95: ほぼMAXだが少し安全マージン)
+		const BLEND_STD = 0.95;
 		const scaleL_std = 1.0 + (rawScaleL - 1.0) * BLEND_STD;
 		const scaleA_std = 1.0 + (rawScaleA - 1.0) * BLEND_STD;
 		const scaleB_std = 1.0 + (rawScaleB - 1.0) * BLEND_STD;
@@ -527,8 +537,9 @@ export default function ColorTransfer() {
 
 		// Soft Reinhard: 平均値のシフト（明るさ・色味の変更）も和らげる
 		// 1.0 = 完全にお手本に合わせる, 0.5 = 元の明るさを半分残す
-		const BLEND_MEAN_L = 0.5; // 白飛び抑制のため少し下げる (0.6 -> 0.5)
-		const BLEND_MEAN_C = 0.6; // 色味も6割程度
+		// Oklab調整: 変化量を取り戻すために強める (0.5/0.6 -> 0.8/0.8)
+		const BLEND_MEAN_L = 0.8;
+		const BLEND_MEAN_C = 0.8;
 
 		// Coefficients
 		const A_L = 1 + (scaleL_std - 1) * k;
@@ -548,11 +559,57 @@ export default function ColorTransfer() {
 		for (let i = 0; i < outData.length; i += 4) {
 			const [l, a, b] = rgb2lab(outData[i], outData[i + 1], outData[i + 2]);
 
-			const l_new = l * A_L + B_L;
-			const a_new = a * A_a + B_a;
-			const b_new = b * A_b + B_b;
+			let l_new = l * A_L + B_L;
+			// 適用したい新しい色 (Potential new color)
+			const a_new_raw = a * A_a + B_a;
+			const b_new_raw = b * A_b + B_b;
 
-			const [r, g, bb] = lab2rgb(l_new, a_new, b_new);
+			// シャドウを引き締める (Shadow Crush)
+			// カラー転送で黒が浮いてしまうのを防ぐため、暗部をわずかに沈める
+			// lは0.0〜1.0 (OklabのLは0~1でおおよそリニア)
+			// 例: 輝度0.2以下の部分を少し暗くする
+			// 2. コントラスト微増強 (S-Curve的な効果)
+			// 全体的に眠い感じになるのを防ぐため、明暗差を少し広げる
+			// 中心(0.5)を基準に1.1倍に引き伸ばす
+			l_new = (l_new - 0.5) * 1.1 + 0.5;
+
+			// 3. 強力なシャドウ引き締め (Shadow Crush)
+			// ユーザー要望: もっと明るいエリア（中間調付近）まで引き締めたい
+			// 範囲をL<0.35 -> L<0.65 (65%グレー) まで大幅に拡大
+			// これにより、中間調も少し暗くなり、全体的に「重厚」な感じになる
+			if (l_new < 0.65) {
+				// l=0.65 -> 1.0倍, l=0.0 -> crushMinFactor倍
+				const crush = crushMinFactor + (l_new / 0.65) * (1.0 - crushMinFactor);
+				l_new *= crush;
+			}
+
+			// ハイライト・シャドウ保護 (Luminance Masking)
+			// 白飛びや黒つぶれ領域に色を乗せてしまうと「濁り」の原因になるため、
+			// 輝度(l)の両端では元の色 (a, b) を維持するウェイトをかける。
+			let weight = 1.0;
+
+			// lはOklabのL値 (0.0=黒 〜 1.0=白)
+			// 以前のCIELAB(log)と異なりリニアに近い
+
+			// Oklab Lの目安: 
+			// 0.0=Black, 1.0=White (Diffuse White usually, highlights can go >1.0)
+
+			// ハイライト保護: L > 0.90 あたりから
+			if (l > 0.90) {
+				// 白に近づくほど weight -> 0
+				weight = Math.max(0, 1.0 - (l - 0.90) * 10.0);
+			} else if (l < 0.08) {
+				// シャドウ保護: 
+				// 黒をかなり沈めたので、色がつくと目立つ。保護範囲を広げる(0.08)
+				// 黒に近づくほど weight -> 0
+				weight = Math.max(0, l * 12.5); // 0.08 * 12.5 = 1.0
+			}
+
+			// ウェイトに基づいてブレンド
+			const a_final = a + (a_new_raw - a) * weight;
+			const b_final = b + (b_new_raw - b) * weight;
+
+			const [r, g, bb] = lab2rgb(l_new, a_final, b_final);
 			outData[i] = r;
 			outData[i + 1] = g;
 			outData[i + 2] = bb;
@@ -596,7 +653,7 @@ export default function ColorTransfer() {
 
 				// 3. Process initial result (Intensity 50)
 				const imgData = previewResized.ctx.getImageData(0, 0, previewResized.width, previewResized.height);
-				const processed = processImageBuffer(imgData, refStats, tgtStats, 50); // Default 50
+				const processed = processImageBuffer(imgData, refStats, tgtStats, 50, 50); // Default 50, 50
 
 				// Draw to canvas to get URL
 				const canvas = document.createElement('canvas');
@@ -610,6 +667,7 @@ export default function ColorTransfer() {
 					originalUrl: targets[i].url,
 					resultUrl: canvas.toDataURL('image/jpeg', 0.9),
 					intensity: 50,
+					shadow: 50,
 					id: i
 				});
 
@@ -631,30 +689,60 @@ export default function ColorTransfer() {
 		}
 	};
 
-	const handleIntensityChange = (index: number, val: number) => {
-		setResults(prev => prev.map((res, i) => i === index ? { ...res, intensity: val } : res));
+	// Handle individual intensity change
+	const handleIntensityChange = (id: number, val: number) => {
+		setResults(prev => prev.map(r => r.id === id ? { ...r, intensity: val } : r));
 
-		if (processingRef.current[index]) return;
-		processingRef.current[index] = true;
+		// Debounce re-processing
+		if (workerRef.current[id]) clearTimeout(workerRef.current[id]);
+		workerRef.current[id] = setTimeout(async () => {
+			const target = targets[id];
+			const resInfo = results.find(r => r.id === id);
+			if (!target || !imageCache.current[id]) return;
 
-		requestAnimationFrame(() => {
-			const cache = imageCache.current[results[index].id];
-			if (!cache) return;
+			const { ctx: previewCtx, width: previewWidth, height: previewHeight, tgtStats, refStats } = imageCache.current[id];
+			const currentShadow = resInfo?.shadow ?? 50;
 
-			const imgData = cache.ctx.getImageData(0, 0, cache.width, cache.height);
-			const processed = processImageBuffer(imgData, cache.refStats, cache.tgtStats, val);
+			// Re-process
+			const imgData = previewCtx.getImageData(0, 0, previewWidth, previewHeight);
+			const processed = processImageBuffer(imgData, refStats, tgtStats, val, currentShadow);
 
 			const canvas = document.createElement('canvas');
-			canvas.width = cache.width;
-			canvas.height = cache.height;
+			canvas.width = previewWidth;
+			canvas.height = previewHeight;
 			const ctx = canvas.getContext('2d')!;
 			ctx.putImageData(processed, 0, 0);
 
-			const newUrl = canvas.toDataURL('image/jpeg', 0.8);
+			setResults(prev => prev.map(r => r.id === id ? { ...r, resultUrl: canvas.toDataURL('image/jpeg', 0.9) } : r));
+		}, 100); // 100ms debounce
+	};
 
-			setResults(prev => prev.map((res, i) => i === index ? { ...res, resultUrl: newUrl } : res));
-			processingRef.current[index] = false;
-		});
+	// Handle individual shadow change
+	const handleShadowChange = (id: number, val: number) => {
+		setResults(prev => prev.map(r => r.id === id ? { ...r, shadow: val } : r));
+
+		// Debounce re-processing
+		if (workerRef.current[id]) clearTimeout(workerRef.current[id]);
+		workerRef.current[id] = setTimeout(async () => {
+			const target = targets[id];
+			const resInfo = results.find(r => r.id === id);
+			if (!target || !imageCache.current[id]) return;
+
+			const { ctx: previewCtx, width: previewWidth, height: previewHeight, tgtStats, refStats } = imageCache.current[id];
+			const currentIntensity = resInfo?.intensity ?? 50;
+
+			// Re-process
+			const imgData = previewCtx.getImageData(0, 0, previewWidth, previewHeight);
+			const processed = processImageBuffer(imgData, refStats, tgtStats, currentIntensity, val);
+
+			const canvas = document.createElement('canvas');
+			canvas.width = previewWidth;
+			canvas.height = previewHeight;
+			const ctx = canvas.getContext('2d')!;
+			ctx.putImageData(processed, 0, 0);
+
+			setResults(prev => prev.map(r => r.id === id ? { ...r, resultUrl: canvas.toDataURL('image/jpeg', 0.9) } : r));
+		}, 100); // 100ms debounce
 	};
 
 	function setImageCache(arg0: {}) {
@@ -1081,6 +1169,22 @@ export default function ColorTransfer() {
 												<span className="w-10 text-right font-mono text-indigo-400 text-sm font-bold">{res.intensity}</span>
 											</div>
 										</div>
+
+										{/* Shadow Slider (Hidden as per request, tuned default 50 is used) */}
+										{/* <div className="flex flex-col gap-1.5">
+											<div className="flex justify-between text-xs text-gray-400">
+												<span>Shadows (黒レベル)</span>
+												<span>{res.shadow}%</span>
+											</div>
+											<input
+												type="range"
+												min="0"
+												max="100"
+												value={res.shadow}
+												onChange={(e) => handleShadowChange(res.id, parseInt(e.target.value))}
+												className="w-full h-1.5 bg-white/10 rounded-full appearance-none cursor-pointer accent-indigo-500 hover:accent-indigo-400 transition-all"
+											/>
+										</div> */}
 									</div>
 								</div>
 							</div>
