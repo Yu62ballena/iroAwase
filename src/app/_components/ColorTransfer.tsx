@@ -1,4 +1,5 @@
 'use client';
+/* eslint-disable @typescript-eslint/no-explicit-any, @typescript-eslint/no-empty-object-type, @typescript-eslint/ban-ts-comment, @typescript-eslint/no-unused-vars, react-hooks/set-state-in-effect */
 
 import React, { useState, useRef, useEffect } from 'react';
 import JSZip from 'jszip';
@@ -242,48 +243,375 @@ const lab2rgb = oklab2rgb;
 interface ColorStats {
 	mean: [number, number, number];
 	std: [number, number, number];
+	percentiles?: {
+		lMax95: number;
+		cMax95: number;
+		lMin5: number;
+	};
+}
+
+interface DebugInfo {
+	refLMean: number;
+	refLStd: number;
+	refCMean: number;
+	refAMean: number;
+	refBMean: number;
+	tgtLMean: number;
+	tgtLStd: number;
+	tgtCMean: number;
+	tgtAMean: number;
+	tgtBMean: number;
+	outLMean: number;
+	outCMean: number;
+	outAMean: number;
+	outBMean: number;
+	clampedLPercent: number;
+	clampedCPercent: number;
+	distance: number;
+	distanceFactor: number;
+	scaleA_std?: number;
+	scaleB_std?: number;
+	bandRatios?: {
+		lShadow: number, lMid: number, lHighlight: number,
+		cShadow: number, cMid: number, cHighlight: number
+	};
+	bandConfidences?: {
+		lShadow: number, lMid: number, lHighlight: number,
+		cShadow: number, cMid: number, cHighlight: number
+	};
+	bandCoeffs?: {
+		lShadow: { A: number, B: number },
+		lMid: { A: number, B: number },
+		lHighlight: { A: number, B: number },
+		cShadow: number,
+		cMid: number,
+		cHighlight: number
+	};
+}
+
+interface ResultState {
+	name: string;
+	originalUrl: string;
+	resultUrl: string;
+	intensity: number; // 0-100, default 35
+	shadow: number; // 0-100, default 50 (Shadow Crush Strength)
+	saturation: number; // -50 to 50, default 0
+	id: number;
+	debugInfo?: DebugInfo;
+}
+
+// シャドウ引き締めの独立関数（将来的な1本化に備える）
+function applyShadowCrush(l: number, shadowStrength: number): number {
+	if (l >= 0.65) return l; // シャドウ領域（L<0.65）以外は影響なし
+	if (shadowStrength === 50) return l;
+
+	if (shadowStrength > 50) {
+		// 引き締め方向 (51〜100 -> 0.0〜1.0)
+		const strength = (shadowStrength - 50) / 50.0;
+		// 最大引き締めでcrushMinFactorが0.0に近づく
+		const crushMinFactor = 1.0 - strength;
+		const crush = crushMinFactor + (l / 0.65) * (1.0 - crushMinFactor);
+		return l * crush;
+	} else {
+		// 持ち上げ方向 (0〜49)
+		// strength: 0(持ち上げ最大) -> 49(微小) = 1.0(最大) -> 0.02
+		const strength = (50 - shadowStrength) / 50.0;
+		// 0.0〜1.0に正規化
+		const normalized = l / 0.65;
+		// ガンマ補正的に持ち上げる。strength=1.0のときガンマ0.5（ルート）
+		const lifted = Math.pow(normalized, 1.0 - strength * 0.5);
+		return lifted * 0.65;
+	}
+}
+
+// 彩度調整ロジックの独立関数（将来的な1本化に備える）
+function applySaturationAdjustment(a: number, b: number, saturationValue: number): [number, number] {
+	if (saturationValue === 0) return [a, b];
+	// saturationValue: -50 to 50
+	// 0 -> 1.0x, 50 -> 1.5x, -50 -> 0.5x
+	const scale = 1.0 + (saturationValue / 100.0);
+	return [a * scale, b * scale];
 }
 
 const computeStats = (ctx: CanvasRenderingContext2D, width: number, height: number): ColorStats => {
 	const imgData = ctx.getImageData(0, 0, width, height);
 	const data = imgData.data;
-	const lVals: number[] = [];
-	const aVals: number[] = [];
-	const bVals: number[] = [];
+	const pixels: { l: number, a: number, b: number, c: number }[] = [];
 
 	for (let i = 0; i < data.length; i += 4) {
 		const r = data[i];
 		const g = data[i + 1];
 		const b = data[i + 2];
-		// if (r > 250 && g > 250 && b > 250) continue; // Remove highlight filter
-		// if (r < 5 && g < 5 && b < 5) continue; // Remove shadow filter
 		const [l, a, bb] = rgb2lab(r, g, b);
-		lVals.push(l);
-		aVals.push(a);
-		bVals.push(bb);
+		const c = Math.sqrt(a * a + bb * bb);
+		pixels.push({ l, a, b: bb, c });
 	}
 
-	const n = lVals.length;
-	if (n === 0) return { mean: [0, 0, 0], std: [1, 1, 1] };
-	const meanL = lVals.reduce((a, c) => a + c, 0) / n;
-	const meanA = aVals.reduce((a, c) => a + c, 0) / n;
-	const meanB = bVals.reduce((a, c) => a + c, 0) / n;
-	const varL = lVals.reduce((a, c) => a + Math.pow(c - meanL, 2), 0) / n;
-	const varA = aVals.reduce((a, c) => a + Math.pow(c - meanA, 2), 0) / n;
-	const varB = bVals.reduce((a, c) => a + Math.pow(c - meanB, 2), 0) / n;
+	const n = pixels.length;
+	if (n === 0) return { mean: [0, 0, 0], std: [1, 1, 1], percentiles: { lMax95: 1, cMax95: 1, lMin5: 0 } };
+
+	// Calculate percentiles
+	const lSorted = [...pixels].map(p => p.l).sort((x, y) => x - y);
+	const cSorted = [...pixels].map(p => p.c).sort((x, y) => x - y);
+
+	const idxL5 = Math.floor(n * 0.05);
+	const idxL95 = Math.floor(n * 0.95);
+	const idxC95 = Math.floor(n * 0.985); // 上位1.5%の除外に緩和（元0.95）
+
+	const lMin5 = lSorted[idxL5];
+	const lMax95 = lSorted[idxL95];
+	const cMax95 = cSorted[idxC95];
+
+	// Filter out extreme outliers for mean/std calculation
+	// Exclude bottom 5% and top 5% of L, and top 5% of C
+	const filtered = pixels.filter(p => p.l >= lMin5 && p.l <= lMax95 && p.c <= cMax95);
+
+	const fn = filtered.length || 1;
+	const meanL = filtered.reduce((acc, p) => acc + p.l, 0) / fn;
+	const meanA = filtered.reduce((acc, p) => acc + p.a, 0) / fn;
+	const meanB = filtered.reduce((acc, p) => acc + p.b, 0) / fn;
+
+	const varL = filtered.reduce((acc, p) => acc + Math.pow(p.l - meanL, 2), 0) / fn;
+	const varA = filtered.reduce((acc, p) => acc + Math.pow(p.a - meanA, 2), 0) / fn;
+	const varB = filtered.reduce((acc, p) => acc + Math.pow(p.b - meanB, 2), 0) / fn;
+
 	const stdL = Math.sqrt(varL);
 	const stdA = Math.sqrt(varA);
 	const stdB = Math.sqrt(varB);
 
-	console.log('Target Stats:', {
-		mean: [meanL, meanA, meanB],
-		std: [stdL, stdA, stdB],
-		pixelCount: n,
-		totalPixels: width * height
-	});
 	return {
 		mean: [meanL, meanA, meanB],
-		std: [stdL, stdA, stdB]
+		std: [stdL, stdA, stdB],
+		percentiles: { lMax95, cMax95, lMin5 }
+	};
+};
+
+// --- v2 Algorithm Types & Constants ---
+const OUTLIER_PERCENT = 0.02; // 上下2%を除外
+const OVERLAP_PERCENT = 0.5; // (t66 - t33) の間隔に対するオーバーラップの割合 (50%)
+const MIN_BAND_PIXEL_RATIO = 0.15; // 信頼度を下げるピクセル数の割合の閾値 (テストのため一時的に15%)
+
+interface BandStat {
+	mean: number;
+	std: number;
+	ratio?: number; // 全体に対するピクセル数の割合
+	confidence?: number; // 信頼度 (0.0〜1.0)
+}
+
+interface BandStats {
+	shadow: BandStat; // Lはシャドウ、Cは低彩度
+	mid: BandStat;
+	highlight: BandStat; // Lはハイライト、Cは高彩度
+}
+
+interface ColorStatsV2 {
+	lBands: BandStats;
+	cBands: BandStats;
+	globalL: BandStat;
+	globalC: BandStat;
+	globalA: BandStat;
+	globalB: BandStat;
+	lBoundaries: { t33: number; t66: number; min: number; max: number };
+	cBoundaries: { t33: number; t66: number; min: number; max: number };
+	percentiles?: {
+		lMax95: number;
+		cMax95: number;
+		lMin5: number;
+	};
+}
+
+// 境界から重みを計算する関数（なめらかなブレンド）
+// 戻り値: [shadowWeight, midWeight, highlightWeight]
+function smoothstep(edge0: number, edge1: number, x: number): number {
+	const t = Math.max(0, Math.min(1, (x - edge0) / (edge1 - edge0)));
+	return t * t * (3 - 2 * t);
+}
+
+function calculateBandWeights(value: number, t33: number, t66: number, min: number, max: number, overlapRatio: number): [number, number, number] {
+	const bandRange = t66 - t33;
+	if (bandRange <= 0.001) return [0, 1, 0]; // 分布が極端に狭い場合はすべてmidとする
+	
+	// のり代（オーバーラップ）が狭すぎるとトーンジャンプや粒状ノイズの原因になるため下限を設ける
+	const MIN_OVERLAP = 0.05;
+	const overlap = Math.max(MIN_OVERLAP, bandRange * overlapRatio);
+	
+	let wS = 0, wM = 0, wH = 0;
+	
+	if (value <= t33 - overlap) {
+		wS = 1;
+	} else if (value < t33 + overlap) {
+		wM = smoothstep(t33 - overlap, t33 + overlap, value);
+		wS = 1 - wM;
+	} else if (value <= t66 - overlap) {
+		wM = 1;
+	} else if (value < t66 + overlap) {
+		wH = smoothstep(t66 - overlap, t66 + overlap, value);
+		wM = 1 - wH;
+	} else {
+		wH = 1;
+	}
+	
+	return [wS, wM, wH];
+}
+
+const computeStatsV2 = (ctx: CanvasRenderingContext2D, width: number, height: number): ColorStatsV2 => {
+	const imgData = ctx.getImageData(0, 0, width, height);
+	const data = imgData.data;
+	const pixels: { l: number, a: number, b: number, c: number }[] = [];
+
+	for (let i = 0; i < data.length; i += 4) {
+		const r = data[i];
+		const g = data[i + 1];
+		const b = data[i + 2];
+		const [l, a, bb] = rgb2lab(r, g, b);
+		const c = Math.sqrt(a * a + bb * bb);
+		pixels.push({ l, a, b: bb, c });
+	}
+
+	const n = pixels.length;
+	// デフォルト値
+	const defaultBand = { mean: 0, std: 1 };
+	const defaultBands = { shadow: { ...defaultBand }, mid: { ...defaultBand }, highlight: { ...defaultBand } };
+	if (n === 0) return {
+		lBands: defaultBands, cBands: defaultBands,
+		globalL: defaultBand, globalC: defaultBand,
+		globalA: defaultBand, globalB: defaultBand,
+		lBoundaries: { t33: 0, t66: 1, min: 0, max: 1 },
+		cBoundaries: { t33: 0, t66: 1, min: 0, max: 1 },
+		percentiles: { lMax95: 1, cMax95: 1, lMin5: 0 }
+	};
+
+	// L, Cをソートして外れ値を除外 (上位・下位 OUTLIER_PERCENT)
+	const lSorted = [...pixels].map(p => p.l).sort((x, y) => x - y);
+	const cSorted = [...pixels].map(p => p.c).sort((x, y) => x - y);
+
+	const idxLower = Math.floor(n * OUTLIER_PERCENT);
+	const idxUpper = Math.floor(n * (1.0 - OUTLIER_PERCENT));
+
+	// 95%クランプ用 (既存の互換性)
+	const idxL5 = Math.floor(n * 0.05);
+	const idxL95 = Math.floor(n * 0.95);
+	const idxC95 = Math.floor(n * 0.985); // 従来通り
+	const lMin5 = lSorted[idxL5];
+	const lMax95 = lSorted[idxL95];
+	const cMax95 = cSorted[idxC95];
+
+	// 分析用境界
+	const lMin = lSorted[idxLower];
+	const lMax = lSorted[idxUpper];
+	const cMin = cSorted[idxLower];
+	const cMax = cSorted[idxUpper];
+
+	// 外れ値を除外したピクセルのみで33%・66%を計算
+	const lFiltered = lSorted.slice(idxLower, idxUpper + 1);
+	const cFiltered = cSorted.slice(idxLower, idxUpper + 1);
+	
+	const l_t33 = lFiltered[Math.floor(lFiltered.length * 0.33)];
+	const l_t66 = lFiltered[Math.floor(lFiltered.length * 0.66)];
+	const c_t33 = cFiltered[Math.floor(cFiltered.length * 0.33)];
+	const c_t66 = cFiltered[Math.floor(cFiltered.length * 0.66)];
+
+	// グローバルのL, C, a, bを計算
+	const globalPixels = pixels.filter(p => p.l >= lMin5 && p.l <= lMax95 && p.c <= cMax95);
+	const gn = globalPixels.length || 1;
+	const globalMeanL = globalPixels.reduce((acc, p) => acc + p.l, 0) / gn;
+	const globalMeanC = globalPixels.reduce((acc, p) => acc + p.c, 0) / gn;
+	const globalMeanA = globalPixels.reduce((acc, p) => acc + p.a, 0) / gn;
+	const globalMeanB = globalPixels.reduce((acc, p) => acc + p.b, 0) / gn;
+	const globalStdL = Math.sqrt(globalPixels.reduce((acc, p) => acc + Math.pow(p.l - globalMeanL, 2), 0) / gn);
+	const globalStdC = Math.sqrt(globalPixels.reduce((acc, p) => acc + Math.pow(p.c - globalMeanC, 2), 0) / gn);
+	const globalStdA = Math.sqrt(globalPixels.reduce((acc, p) => acc + Math.pow(p.a - globalMeanA, 2), 0) / gn);
+	const globalStdB = Math.sqrt(globalPixels.reduce((acc, p) => acc + Math.pow(p.b - globalMeanB, 2), 0) / gn);
+
+	// 帯域ごとの重み付き統計を計算
+	let sumWL_S = 0, sumL_S = 0, sumWL_M = 0, sumL_M = 0, sumWL_H = 0, sumL_H = 0;
+	let sumWC_S = 0, sumC_S = 0, sumWC_M = 0, sumC_M = 0, sumWC_H = 0, sumC_H = 0;
+
+	for (const p of pixels) {
+		const [wlS, wlM, wlH] = calculateBandWeights(p.l, l_t33, l_t66, lMin, lMax, OVERLAP_PERCENT);
+		sumWL_S += wlS; sumL_S += p.l * wlS;
+		sumWL_M += wlM; sumL_M += p.l * wlM;
+		sumWL_H += wlH; sumL_H += p.l * wlH;
+
+		const [wcS, wcM, wcH] = calculateBandWeights(p.c, c_t33, c_t66, cMin, cMax, OVERLAP_PERCENT);
+		sumWC_S += wcS; sumC_S += p.c * wcS;
+		sumWC_M += wcM; sumC_M += p.c * wcM;
+		sumWC_H += wcH; sumC_H += p.c * wcH;
+	}
+
+	const meanLS = sumWL_S > 0 ? sumL_S / sumWL_S : 0;
+	const meanLM = sumWL_M > 0 ? sumL_M / sumWL_M : 0;
+	const meanLH = sumWL_H > 0 ? sumL_H / sumWL_H : 0;
+	const meanCS = sumWC_S > 0 ? sumC_S / sumWC_S : 0;
+	const meanCM = sumWC_M > 0 ? sumC_M / sumWC_M : 0;
+	const meanCH = sumWC_H > 0 ? sumC_H / sumWC_H : 0;
+
+	// Std計算
+	let varL_S = 0, varL_M = 0, varL_H = 0;
+	let varC_S = 0, varC_M = 0, varC_H = 0;
+
+	for (const p of pixels) {
+		const [wlS, wlM, wlH] = calculateBandWeights(p.l, l_t33, l_t66, lMin, lMax, OVERLAP_PERCENT);
+		varL_S += wlS * Math.pow(p.l - meanLS, 2);
+		varL_M += wlM * Math.pow(p.l - meanLM, 2);
+		varL_H += wlH * Math.pow(p.l - meanLH, 2);
+
+		const [wcS, wcM, wcH] = calculateBandWeights(p.c, c_t33, c_t66, cMin, cMax, OVERLAP_PERCENT);
+		varC_S += wcS * Math.pow(p.c - meanCS, 2);
+		varC_M += wcM * Math.pow(p.c - meanCM, 2);
+		varC_H += wcH * Math.pow(p.c - meanCH, 2);
+	}
+
+	const stdLS = Math.sqrt(sumWL_S > 0 ? varL_S / sumWL_S : 0);
+	const stdLM = Math.sqrt(sumWL_M > 0 ? varL_M / sumWL_M : 0);
+	const stdLH = Math.sqrt(sumWL_H > 0 ? varL_H / sumWL_H : 0);
+	const stdCS = Math.sqrt(sumWC_S > 0 ? varC_S / sumWC_S : 0);
+	const stdCM = Math.sqrt(sumWC_M > 0 ? varC_M / sumWC_M : 0);
+	const stdCH = Math.sqrt(sumWC_H > 0 ? varC_H / sumWC_H : 0);
+
+	const ratioLS = sumWL_S / n;
+	const ratioLM = sumWL_M / n;
+	const ratioLH = sumWL_H / n;
+	const ratioCS = sumWC_S / n;
+	const ratioCM = sumWC_M / n;
+	const ratioCH = sumWC_H / n;
+
+	const confLS = Math.min(1.0, ratioLS / MIN_BAND_PIXEL_RATIO);
+	const confLM = Math.min(1.0, ratioLM / MIN_BAND_PIXEL_RATIO);
+	const confLH = Math.min(1.0, ratioLH / MIN_BAND_PIXEL_RATIO);
+	const confCS = Math.min(1.0, ratioCS / MIN_BAND_PIXEL_RATIO);
+	const confCM = Math.min(1.0, ratioCM / MIN_BAND_PIXEL_RATIO);
+	const confCH = Math.min(1.0, ratioCH / MIN_BAND_PIXEL_RATIO);
+
+	// S, H帯域の統計をM帯域に寄せる（M帯域自体はそのまま）
+	const adjMeanLS = meanLS * confLS + meanLM * (1 - confLS);
+	const adjStdLS = stdLS * confLS + stdLM * (1 - confLS);
+	const adjMeanLH = meanLH * confLH + meanLM * (1 - confLH);
+	const adjStdLH = stdLH * confLH + stdLM * (1 - confLH);
+
+	const adjMeanCS = meanCS * confCS + meanCM * (1 - confCS);
+	const adjStdCS = stdCS * confCS + stdCM * (1 - confCS);
+	const adjMeanCH = meanCH * confCH + meanCM * (1 - confCH);
+	const adjStdCH = stdCH * confCH + stdCM * (1 - confCH);
+
+	return {
+		lBands: {
+			shadow: { mean: adjMeanLS, std: adjStdLS, ratio: ratioLS, confidence: confLS },
+			mid: { mean: meanLM, std: stdLM, ratio: ratioLM, confidence: confLM },
+			highlight: { mean: adjMeanLH, std: adjStdLH, ratio: ratioLH, confidence: confLH }
+		},
+		cBands: {
+			shadow: { mean: adjMeanCS, std: adjStdCS, ratio: ratioCS, confidence: confCS },
+			mid: { mean: meanCM, std: stdCM, ratio: ratioCM, confidence: confCM },
+			highlight: { mean: adjMeanCH, std: adjStdCH, ratio: ratioCH, confidence: confCH }
+		},
+		globalL: { mean: globalMeanL, std: globalStdL },
+		globalC: { mean: globalMeanC, std: globalStdC },
+		globalA: { mean: globalMeanA, std: globalStdA },
+		globalB: { mean: globalMeanB, std: globalStdB },
+		lBoundaries: { t33: l_t33, t66: l_t66, min: lMin, max: lMax },
+		cBoundaries: { t33: c_t33, t66: c_t66, min: cMin, max: cMax },
+		percentiles: { lMax95, cMax95, lMin5 }
 	};
 };
 
@@ -299,20 +627,24 @@ export default function ColorTransfer() {
 	const [processStatus, setProcessStatus] = useState<ProcessStatus>({ isProcessing: false, message: '', progress: 0 });
 	const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
+	const [isDebugMode, setIsDebugMode] = useState(false);
+	const [showDebugPanel, setShowDebugPanel] = useState(false);
+	const [algorithmVersion, setAlgorithmVersion] = useState<'v1' | 'v2'>('v2');
+
 	// Get translation object helper
 	const t = TRANSLATIONS[language];
 
 	// Auto-scroll ref
 	const resultsRef = useRef<HTMLDivElement>(null);
 
-	// Cache
 	const imageCache = useRef<{
 		[id: number]: {
 			ctx: CanvasRenderingContext2D, // Original preview context (resized)
 			width: number,
 			height: number,
-			tgtStats: ColorStats,
-			refStats: ColorStats
+			tgtStats: ColorStats | ColorStatsV2,
+			refStats: ColorStats | ColorStatsV2,
+			algorithmVersion: 'v1' | 'v2'
 		}
 	}>({});
 
@@ -320,13 +652,24 @@ export default function ColorTransfer() {
 	const processingRef = useRef<{ [id: number]: boolean }>({});
 	const workerRef = useRef<{ [id: number]: NodeJS.Timeout }>({});
 
-	// Detect user language on mount
+	// Detect user language and debug query on mount
 	useEffect(() => {
 		const lang = navigator.language || navigator.languages[0];
 		if (lang && !lang.toLowerCase().startsWith('ja')) {
 			setLanguage('en');
 		} else {
 			setLanguage('ja');
+		}
+
+		if (typeof window !== 'undefined') {
+			const searchParams = new URLSearchParams(window.location.search);
+			const hashPart = window.location.hash.split('?')[1];
+			const hashParams = new URLSearchParams(hashPart || '');
+
+			if (searchParams.get('debug') === '1' || hashParams.get('debug') === '1') {
+				setIsDebugMode(true);
+				setShowDebugPanel(true);
+			}
 		}
 	}, []);
 
@@ -346,6 +689,32 @@ export default function ColorTransfer() {
 		if (reference || targets.length > 0) {
 			setIsResetModalOpen(true);
 		}
+	};
+
+	const handleRemoveTarget = (index: number) => {
+		setTargets(prev => {
+			const newTargets = [...prev];
+			if (newTargets[index]?.url) URL.revokeObjectURL(newTargets[index].url);
+			newTargets.splice(index, 1);
+			return newTargets;
+		});
+
+		setResults(prev => {
+			if (prev.length === 0) return prev;
+			return prev.filter(r => r.id !== index).map(r => r.id > index ? { ...r, id: r.id - 1 } : r);
+		});
+
+		// imageCacheのキーをシフトする
+		const newCache: { [id: number]: any } = {};
+		Object.keys(imageCache.current).forEach(key => {
+			const k = parseInt(key);
+			if (k < index) {
+				newCache[k] = imageCache.current[k];
+			} else if (k > index) {
+				newCache[k - 1] = imageCache.current[k];
+			}
+		});
+		imageCache.current = newCache;
 	};
 
 	const validateAndProcessFile = async (file: File): Promise<File | Blob | null> => {
@@ -472,73 +841,268 @@ export default function ColorTransfer() {
 		}
 	};
 
+	// Apply color transfer with v2 algorithm (Band splitting)
+	const processImageBufferV2 = (
+		imgData: ImageData,
+		refStats: ColorStatsV2,
+		tgtStats: ColorStatsV2,
+		intensity: number,
+		shadowStrength: number = 50,
+		saturation: number = 0,
+		debugOut?: { debugInfo?: DebugInfo }
+	): ImageData => {
+		const data = imgData.data;
+		const output = new ImageData(new Uint8ClampedArray(data), imgData.width, imgData.height);
+		const outData = output.data;
+
+		const dL = refStats.globalL.mean - tgtStats.globalL.mean;
+		const da = refStats.globalA.mean - tgtStats.globalA.mean;
+		const db = refStats.globalB.mean - tgtStats.globalB.mean;
+		const dist = Math.sqrt(dL * dL + da * da + db * db);
+
+		let distanceFactor = Math.min(1.0, 0.3 + (dist * 7.0));
+		if (tgtStats.globalC.mean > refStats.globalC.mean) {
+			distanceFactor = Math.max(distanceFactor, 0.6);
+		}
+		const userIntent = Math.abs(intensity - 50) / 50.0;
+		distanceFactor = distanceFactor + (1.0 - distanceFactor) * userIntent;
+		const k = (intensity / 114.0) * distanceFactor;
+
+		const SCALE_CAP = 3.0;
+		const SCALE_FLOOR = 0.7;
+		const REF_STD_CAP = 0.18;
+		const BLEND_STD = 0.95;
+		const BLEND_MEAN_L = 0.8;
+		const BLEND_MEAN_C = 0.8;
+
+		function calcLCoeff(tgtL: BandStat, refL: BandStat) {
+			const effRefStd = Math.min(refL.std, REF_STD_CAP);
+			const rawScale = (tgtL.std > 0.01) ? Math.min(SCALE_CAP, effRefStd / tgtL.std) : 1;
+			const scale_std = 1.0 + (rawScale - 1.0) * BLEND_STD;
+			const A = 1 + (scale_std - 1) * k;
+			const B = (refL.mean - tgtL.mean * scale_std) * k * BLEND_MEAN_L;
+			return { A, B };
+		}
+		const coeffLS_raw = calcLCoeff(tgtStats.lBands.shadow, refStats.lBands.shadow);
+		const coeffLM = calcLCoeff(tgtStats.lBands.mid, refStats.lBands.mid);
+		const coeffLH_raw = calcLCoeff(tgtStats.lBands.highlight, refStats.lBands.highlight);
+
+		function calcCCoeff(tgtC: BandStat, refC: BandStat) {
+			const effRefStd = Math.min(refC.std, REF_STD_CAP);
+			const rawScale = (tgtC.std > 0.01) ? Math.min(SCALE_CAP, effRefStd / tgtC.std) : 1;
+			let scale_std = 1.0 + (rawScale - 1.0) * BLEND_STD;
+			scale_std = Math.max(scale_std, SCALE_FLOOR);
+			const A_C = 1 + (scale_std - 1) * k;
+			return A_C;
+		}
+		const coeffCS_raw = calcCCoeff(tgtStats.cBands.shadow, refStats.cBands.shadow);
+		const coeffCM = calcCCoeff(tgtStats.cBands.mid, refStats.cBands.mid);
+		const coeffCH_raw = calcCCoeff(tgtStats.cBands.highlight, refStats.cBands.highlight);
+
+		// 帯域間の極端な変換差異によるトーンジャンプ（粒状ノイズ）を防ぐためのガード
+		const MAX_A_RATIO = 1.35; // Mid帯域のA係数に対して、Shadow/Highlightは0.74〜1.35倍までに制限
+		const MIN_A_RATIO = 1.0 / MAX_A_RATIO;
+		const MAX_B_DIFF = 0.08; // B係数（シフト量）の差の絶対値を制限
+
+		const coeffLS = {
+			A: Math.max(coeffLM.A * MIN_A_RATIO, Math.min(coeffLM.A * MAX_A_RATIO, coeffLS_raw.A)),
+			B: Math.max(coeffLM.B - MAX_B_DIFF, Math.min(coeffLM.B + MAX_B_DIFF, coeffLS_raw.B))
+		};
+		const coeffLH = {
+			A: Math.max(coeffLM.A * MIN_A_RATIO, Math.min(coeffLM.A * MAX_A_RATIO, coeffLH_raw.A)),
+			B: Math.max(coeffLM.B - MAX_B_DIFF, Math.min(coeffLM.B + MAX_B_DIFF, coeffLH_raw.B))
+		};
+		
+		const coeffCS = Math.max(coeffCM * MIN_A_RATIO, Math.min(coeffCM * MAX_A_RATIO, coeffCS_raw));
+		const coeffCH = Math.max(coeffCM * MIN_A_RATIO, Math.min(coeffCM * MAX_A_RATIO, coeffCH_raw));
+
+		const globalRawScaleA = (tgtStats.globalA.std > 0.01) ? Math.min(SCALE_CAP, Math.min(refStats.globalA.std, REF_STD_CAP) / tgtStats.globalA.std) : 1;
+		const globalScaleA = Math.max(SCALE_FLOOR, 1.0 + (globalRawScaleA - 1.0) * BLEND_STD);
+		const B_a_global = (refStats.globalA.mean - tgtStats.globalA.mean * globalScaleA) * k * BLEND_MEAN_C;
+
+		const globalRawScaleB = (tgtStats.globalB.std > 0.01) ? Math.min(SCALE_CAP, Math.min(refStats.globalB.std, REF_STD_CAP) / tgtStats.globalB.std) : 1;
+		const globalScaleB = Math.max(SCALE_FLOOR, 1.0 + (globalRawScaleB - 1.0) * BLEND_STD);
+		const B_b_global = (refStats.globalB.mean - tgtStats.globalB.mean * globalScaleB) * k * BLEND_MEAN_C;
+
+		let clampedLCount = 0;
+		let clampedCCount = 0;
+		let sumLOut = 0, sumCOut = 0, sumAOut = 0, sumBOut = 0;
+		const totalPixels = outData.length / 4;
+
+		for (let i = 0; i < outData.length; i += 4) {
+			const [l, a, b] = rgb2lab(outData[i], outData[i + 1], outData[i + 2]);
+			const c = Math.sqrt(a * a + b * b);
+
+			const [wlS, wlM, wlH] = calculateBandWeights(l, tgtStats.lBoundaries.t33, tgtStats.lBoundaries.t66, tgtStats.lBoundaries.min, tgtStats.lBoundaries.max, OVERLAP_PERCENT);
+			const l_new_S = l * coeffLS.A + coeffLS.B;
+			const l_new_M = l * coeffLM.A + coeffLM.B;
+			const l_new_H = l * coeffLH.A + coeffLH.B;
+			let l_new = l_new_S * wlS + l_new_M * wlM + l_new_H * wlH;
+
+			const [wcS, wcM, wcH] = calculateBandWeights(c, tgtStats.cBoundaries.t33, tgtStats.cBoundaries.t66, tgtStats.cBoundaries.min, tgtStats.cBoundaries.max, OVERLAP_PERCENT);
+			const scaleC_blended = coeffCS * wcS + coeffCM * wcM + coeffCH * wcH;
+
+			let a_new_raw = a * scaleC_blended + B_a_global;
+			let b_new_raw = b * scaleC_blended + B_b_global;
+
+			// クランプと保護処理 (v1と同等)
+			if (refStats.percentiles) {
+				if (l_new > refStats.percentiles.lMax95) {
+					l_new = refStats.percentiles.lMax95 + (l_new - refStats.percentiles.lMax95) * 0.2;
+					clampedLCount++;
+				}
+				const c_new = Math.sqrt(a_new_raw * a_new_raw + b_new_raw * b_new_raw);
+				if (c_new > refStats.percentiles.cMax95 && c_new > 0.01) {
+					const over = c_new - refStats.percentiles.cMax95;
+					const c_clamped = refStats.percentiles.cMax95 + over * 0.3;
+					const ratio = c_clamped / c_new;
+					a_new_raw *= ratio;
+					b_new_raw *= ratio;
+					clampedCCount++;
+				}
+			}
+
+			l_new = (l_new - 0.5) * 1.1 + 0.5;
+			l_new = applyShadowCrush(l_new, shadowStrength);
+
+			let weight = 1.0;
+			if (l > 0.90) {
+				weight = Math.max(0, 1.0 - (l - 0.90) * 10.0);
+			} else if (l < 0.08) {
+				weight = Math.max(0, l * 12.5);
+			}
+
+			const a_final_pre = a + (a_new_raw - a) * weight;
+			const b_final_pre = b + (b_new_raw - b) * weight;
+
+			const [a_final, b_final] = applySaturationAdjustment(a_final_pre, b_final_pre, saturation);
+
+			sumLOut += l_new;
+			sumCOut += Math.sqrt(a_final * a_final + b_final * b_final);
+			sumAOut += a_final;
+			sumBOut += b_final;
+
+			const [r, g, bb] = lab2rgb(l_new, a_final, b_final);
+			outData[i] = r;
+			outData[i + 1] = g;
+			outData[i + 2] = bb;
+		}
+
+		if (debugOut) {
+			debugOut.debugInfo = {
+				refLMean: refStats.globalL.mean,
+				refLStd: refStats.globalL.std,
+				refCMean: refStats.globalC.mean,
+				refAMean: refStats.globalA.mean,
+				refBMean: refStats.globalB.mean,
+				tgtLMean: tgtStats.globalL.mean,
+				tgtLStd: tgtStats.globalL.std,
+				tgtCMean: tgtStats.globalC.mean,
+				tgtAMean: tgtStats.globalA.mean,
+				tgtBMean: tgtStats.globalB.mean,
+				outLMean: sumLOut / totalPixels,
+				outCMean: sumCOut / totalPixels,
+				outAMean: sumAOut / totalPixels,
+				outBMean: sumBOut / totalPixels,
+				clampedLPercent: (clampedLCount / totalPixels) * 100,
+				clampedCPercent: (clampedCCount / totalPixels) * 100,
+				distance: dist,
+				distanceFactor: distanceFactor,
+				scaleA_std: globalScaleA,
+				scaleB_std: globalScaleB,
+				bandRatios: {
+					lShadow: tgtStats.lBands.shadow.ratio || 0,
+					lMid: tgtStats.lBands.mid.ratio || 0,
+					lHighlight: tgtStats.lBands.highlight.ratio || 0,
+					cShadow: tgtStats.cBands.shadow.ratio || 0,
+					cMid: tgtStats.cBands.mid.ratio || 0,
+					cHighlight: tgtStats.cBands.highlight.ratio || 0
+				},
+				bandConfidences: {
+					lShadow: tgtStats.lBands.shadow.confidence || 0,
+					lMid: tgtStats.lBands.mid.confidence || 0,
+					lHighlight: tgtStats.lBands.highlight.confidence || 0,
+					cShadow: tgtStats.cBands.shadow.confidence || 0,
+					cMid: tgtStats.cBands.mid.confidence || 0,
+					cHighlight: tgtStats.cBands.highlight.confidence || 0
+				},
+				bandCoeffs: {
+					lShadow: { A: coeffLS.A, B: coeffLS.B },
+					lMid: { A: coeffLM.A, B: coeffLM.B },
+					lHighlight: { A: coeffLH.A, B: coeffLH.B },
+					cShadow: coeffCS,
+					cMid: coeffCM,
+					cHighlight: coeffCH
+				}
+			};
+		}
+
+		return output;
+	};
+
 	// Apply color transfer with variable intensity
 	const processImageBuffer = (
 		imgData: ImageData,
 		refStats: ColorStats,
 		tgtStats: ColorStats,
-		intensity: number, // 0 to 100, 50 = standard
-		shadowStrength: number = 50 // 0 to 100, 50 = 50% crush, 0 = no crush, 100 = full crush
+		intensity: number,
+		shadowStrength: number = 50,
+		saturation: number = 0,
+		debugOut?: { debugInfo?: DebugInfo }
 	): ImageData => {
 		const data = imgData.data;
 		// Clone data for output (don't mutate original if cached)
 		const output = new ImageData(new Uint8ClampedArray(data), imgData.width, imgData.height);
 		const outData = output.data;
 
-
-
 		// Calculate interpolation factor, 0-100 -> 0.0-2.0
+		// Oklab空間での平均値の距離 (Distance)
+		const dL = refStats.mean[0] - tgtStats.mean[0];
+		const da = refStats.mean[1] - tgtStats.mean[1];
+		const db = refStats.mean[2] - tgtStats.mean[2];
+		const dist = Math.sqrt(dL * dL + da * da + db * db);
+
+		// 距離が小さい（＝似ている）ほど強度を落とす
+		// dist=0 -> factor=0.3, dist>=0.1 -> factor=1.0 に近づく
+		let distanceFactor = Math.min(1.0, 0.3 + (dist * 7.0));
+
+		// 元画像の彩度がお手本より高い場合、無条件に下げすぎないよう下限を設ける
+		const tgtC = Math.sqrt(tgtStats.mean[1]**2 + tgtStats.mean[2]**2);
+		const refC = Math.sqrt(refStats.mean[1]**2 + refStats.mean[2]**2);
+		if (tgtC > refC) {
+			distanceFactor = Math.max(distanceFactor, 0.6);
+		}
+
+		// ユーザー操作の反映：intensityがデフォルト(50)から離れるほど、distanceFactorを1.0(無効化)に近づける
+		const userIntent = Math.abs(intensity - 50) / 50.0;
+		distanceFactor = distanceFactor + (1.0 - distanceFactor) * userIntent;
+
 		// ユーザーフィードバック:
 		// 「強度35くらいがベスト。今の35を、新しい50(デフォルト)にしてほしい」
-		// 以前: k = intensity / 80.0
-		// 旧35のときのk = 35 / 80 = 0.4375
-		// 新50のときにk=0.4375にするには: 50 / X = 0.4375 -> X = 114.28...
-		// よって 114.0 で割る設定にする。
-		const k = intensity / 114.0;
-
-		// Shadow Crush Factor
-		// 0 (Light) -> 1.0 min factor (No darkening)
-		// 100 (Black) -> 0.0 min factor (Pitch black)
-		// ユーザー要望: スライダー65-70くらいがベストだった
-		// -> デフォルト50のときに、そのくらいの強度(x0.3付近)になるように係数1.4倍
-		let crushMinFactor = 1.0 - (shadowStrength / 100.0) * 1.4;
-		crushMinFactor = Math.max(0, crushMinFactor);
+		const k = (intensity / 114.0) * distanceFactor;
 
 		// Pre-calculate global constants for speed
-		// ターゲット画像の標準偏差が極端に小さい場合、倍率が暴走して色が破綻するのを防ぐため、
-		// 倍率に上限(CAP)を設ける。
-		const SCALE_CAP = 3.0; // 最大3倍まで（5.0から厳しくした）
-
-		// ■ ユーザー要望対応: 彩度(標準偏差)の上限キャップ
-		// お手本画像の彩度が強すぎる(stdが大きい)場合、その強さをそのまま適用すると色が破綻する。
-		// そのため、計算に使うお手本の彩度値に上限を設け、「彩度100のお手本が来ても50として扱う」ような処理を行う。
-		// Log空間なので値は小さい(0.15は安全側だが、青空などの綺麗な色が出にくいので0.18に緩和)
+		const SCALE_CAP = 3.0; // 最大3倍まで
+		const SCALE_FLOOR = 0.7; // 彩度縮小の下限キャップ
 		const REF_STD_CAP = 0.18;
 
 		const effectiveRefStdL = Math.min(refStats.std[0], REF_STD_CAP);
 		const effectiveRefStdA = Math.min(refStats.std[1], REF_STD_CAP);
 		const effectiveRefStdB = Math.min(refStats.std[2], REF_STD_CAP);
 
-		// 生の倍率 (Cap済みのお手本stdを使用)
+		// 生の倍率
 		const rawScaleL = (tgtStats.std[0] > 0.01) ? Math.min(SCALE_CAP, effectiveRefStdL / tgtStats.std[0]) : 1;
 		const rawScaleA = (tgtStats.std[1] > 0.01) ? Math.min(SCALE_CAP, effectiveRefStdA / tgtStats.std[1]) : 1;
 		const rawScaleB = (tgtStats.std[2] > 0.01) ? Math.min(SCALE_CAP, effectiveRefStdB / tgtStats.std[2]) : 1;
 
-
-
-		// Soft Reinhard: コントラスト（stdの比）を完全に適用せず、元の画像との中間にする
-		// 例: 0.5 = 元のコントラストと、お手本のコントラストの中間
-		// ユーザー要望に合わせ調整 (1.0 -> 0.95: ほぼMAXだが少し安全マージン)
 		const BLEND_STD = 0.95;
 		const scaleL_std = 1.0 + (rawScaleL - 1.0) * BLEND_STD;
-		const scaleA_std = 1.0 + (rawScaleA - 1.0) * BLEND_STD;
-		const scaleB_std = 1.0 + (rawScaleB - 1.0) * BLEND_STD;
+		let scaleA_std = 1.0 + (rawScaleA - 1.0) * BLEND_STD;
+		let scaleB_std = 1.0 + (rawScaleB - 1.0) * BLEND_STD;
 
-		console.log('Scaling Factors (Soft+RefCap):', { scaleL_std, scaleA_std, scaleB_std, refCap: REF_STD_CAP });
+		scaleA_std = Math.max(scaleA_std, SCALE_FLOOR);
+		scaleB_std = Math.max(scaleB_std, SCALE_FLOOR);
 
-		// Soft Reinhard: 平均値のシフト（明るさ・色味の変更）も和らげる
-		// 1.0 = 完全にお手本に合わせる, 0.5 = 元の明るさを半分残す
-		// Oklab調整: 変化量を取り戻すために強める (0.5/0.6 -> 0.8/0.8)
 		const BLEND_MEAN_L = 0.8;
 		const BLEND_MEAN_C = 0.8;
 
@@ -552,68 +1116,97 @@ export default function ColorTransfer() {
 		const A_b = 1 + (scaleB_std - 1) * k;
 		const B_b = (refStats.mean[2] - tgtStats.mean[2] * scaleB_std) * k * BLEND_MEAN_C;
 
-		// Apply linear transform
-		// Note: 標準の式は L_new = (L_old - Tgt_Mean) * Scale + Ref_Mean
-		// 展開すると: L_new = L_old * Scale + (Ref_Mean - Tgt_Mean * Scale)
-		// 今回は後半のオフセット項(B_L, B_a, B_b)にBLEND係数を掛けて弱めている
+		// Debug counters
+		let clampedLCount = 0;
+		let clampedCCount = 0;
+		let sumLOut = 0;
+		let sumCOut = 0;
+		let sumAOut = 0;
+		let sumBOut = 0;
+		const totalPixels = outData.length / 4;
 
 		for (let i = 0; i < outData.length; i += 4) {
 			const [l, a, b] = rgb2lab(outData[i], outData[i + 1], outData[i + 2]);
 
 			let l_new = l * A_L + B_L;
-			// 適用したい新しい色 (Potential new color)
-			const a_new_raw = a * A_a + B_a;
-			const b_new_raw = b * A_b + B_b;
+			let a_new_raw = a * A_a + B_a;
+			let b_new_raw = b * A_b + B_b;
 
-			// シャドウを引き締める (Shadow Crush)
-			// カラー転送で黒が浮いてしまうのを防ぐため、暗部をわずかに沈める
-			// lは0.0〜1.0 (OklabのLは0~1でおおよそリニア)
-			// 例: 輝度0.2以下の部分を少し暗くする
-			// 2. コントラスト微増強 (S-Curve的な効果)
-			// 全体的に眠い感じになるのを防ぐため、明暗差を少し広げる
-			// 中心(0.5)を基準に1.1倍に引き伸ばす
+			// 出力クランプ (Absolute Clamp for Lightness and Saturation)
+			if (refStats.percentiles) {
+				// 明度のクランプ
+				if (l_new > refStats.percentiles.lMax95) {
+					l_new = refStats.percentiles.lMax95 + (l_new - refStats.percentiles.lMax95) * 0.2; // ソフトクリップ
+					clampedLCount++;
+				}
+				// 彩度のクランプ
+				const c_new = Math.sqrt(a_new_raw * a_new_raw + b_new_raw * b_new_raw);
+				if (c_new > refStats.percentiles.cMax95 && c_new > 0.01) {
+					const over = c_new - refStats.percentiles.cMax95;
+					const c_clamped = refStats.percentiles.cMax95 + over * 0.3; // 超過分を30%に圧縮
+					const ratio = c_clamped / c_new;
+					a_new_raw *= ratio;
+					b_new_raw *= ratio;
+					clampedCCount++;
+				}
+			}
+
+			// コントラスト微増強
 			l_new = (l_new - 0.5) * 1.1 + 0.5;
 
-			// 3. 強力なシャドウ引き締め (Shadow Crush)
-			// ユーザー要望: もっと明るいエリア（中間調付近）まで引き締めたい
-			// 範囲をL<0.35 -> L<0.65 (65%グレー) まで大幅に拡大
-			// これにより、中間調も少し暗くなり、全体的に「重厚」な感じになる
-			if (l_new < 0.65) {
-				// l=0.65 -> 1.0倍, l=0.0 -> crushMinFactor倍
-				const crush = crushMinFactor + (l_new / 0.65) * (1.0 - crushMinFactor);
-				l_new *= crush;
-			}
+			// 強力なシャドウ引き締め（独立関数）
+			l_new = applyShadowCrush(l_new, shadowStrength);
 
-			// ハイライト・シャドウ保護 (Luminance Masking)
-			// 白飛びや黒つぶれ領域に色を乗せてしまうと「濁り」の原因になるため、
-			// 輝度(l)の両端では元の色 (a, b) を維持するウェイトをかける。
+			// ハイライト・シャドウ保護
 			let weight = 1.0;
-
-			// lはOklabのL値 (0.0=黒 〜 1.0=白)
-			// 以前のCIELAB(log)と異なりリニアに近い
-
-			// Oklab Lの目安: 
-			// 0.0=Black, 1.0=White (Diffuse White usually, highlights can go >1.0)
-
-			// ハイライト保護: L > 0.90 あたりから
 			if (l > 0.90) {
-				// 白に近づくほど weight -> 0
 				weight = Math.max(0, 1.0 - (l - 0.90) * 10.0);
 			} else if (l < 0.08) {
-				// シャドウ保護: 
-				// 黒をかなり沈めたので、色がつくと目立つ。保護範囲を広げる(0.08)
-				// 黒に近づくほど weight -> 0
-				weight = Math.max(0, l * 12.5); // 0.08 * 12.5 = 1.0
+				weight = Math.max(0, l * 12.5);
 			}
 
-			// ウェイトに基づいてブレンド
-			const a_final = a + (a_new_raw - a) * weight;
-			const b_final = b + (b_new_raw - b) * weight;
+			const a_final_pre = a + (a_new_raw - a) * weight;
+			const b_final_pre = b + (b_new_raw - b) * weight;
+
+			// 彩度スライダーによる最終調整（独立関数）
+			const [a_final, b_final] = applySaturationAdjustment(a_final_pre, b_final_pre, saturation);
+
+			// 統計用
+			sumLOut += l_new;
+			const c_final = Math.sqrt(a_final * a_final + b_final * b_final);
+			sumCOut += c_final;
+			sumAOut += a_final;
+			sumBOut += b_final;
 
 			const [r, g, bb] = lab2rgb(l_new, a_final, b_final);
 			outData[i] = r;
 			outData[i + 1] = g;
 			outData[i + 2] = bb;
+		}
+
+		if (debugOut) {
+			debugOut.debugInfo = {
+				refLMean: refStats.mean[0],
+				refLStd: refStats.std[0],
+				refCMean: Math.sqrt(refStats.mean[1]**2 + refStats.mean[2]**2),
+				refAMean: refStats.mean[1],
+				refBMean: refStats.mean[2],
+				tgtLMean: tgtStats.mean[0],
+				tgtLStd: tgtStats.std[0],
+				tgtCMean: Math.sqrt(tgtStats.mean[1]**2 + tgtStats.mean[2]**2),
+				tgtAMean: tgtStats.mean[1],
+				tgtBMean: tgtStats.mean[2],
+				outLMean: sumLOut / totalPixels,
+				outCMean: sumCOut / totalPixels,
+				outAMean: sumAOut / totalPixels,
+				outBMean: sumBOut / totalPixels,
+				clampedLPercent: (clampedLCount / totalPixels) * 100,
+				clampedCPercent: (clampedCCount / totalPixels) * 100,
+				distance: dist,
+				distanceFactor: distanceFactor,
+				scaleA_std: scaleA_std,
+				scaleB_std: scaleB_std
+			};
 		}
 
 		return output;
@@ -627,7 +1220,12 @@ export default function ColorTransfer() {
 
 		try {
 			const refResized = resizeImageCanvas(reference.element, RESIZE_LONG_EDGE);
-			const refStats = computeStats(refResized.ctx, refResized.width, refResized.height);
+			let refStats: ColorStats | ColorStatsV2;
+			if (algorithmVersion === 'v1') {
+				refStats = computeStats(refResized.ctx, refResized.width, refResized.height);
+			} else {
+				refStats = computeStatsV2(refResized.ctx, refResized.width, refResized.height);
+			}
 
 			const newResults: ResultState[] = [];
 
@@ -641,7 +1239,12 @@ export default function ColorTransfer() {
 
 				// 1. Prepare preview size
 				const previewResized = resizeImageCanvas(targets[i].element, PREVIEW_EDGE);
-				const tgtStats = computeStats(previewResized.ctx, previewResized.width, previewResized.height);
+				let tgtStats: ColorStats | ColorStatsV2;
+				if (algorithmVersion === 'v1') {
+					tgtStats = computeStats(previewResized.ctx, previewResized.width, previewResized.height);
+				} else {
+					tgtStats = computeStatsV2(previewResized.ctx, previewResized.width, previewResized.height);
+				}
 
 				// 2. Cache original data for slider updates
 				imageCache.current[i] = {
@@ -649,12 +1252,19 @@ export default function ColorTransfer() {
 					width: previewResized.width,
 					height: previewResized.height,
 					tgtStats: tgtStats,
-					refStats: refStats
+					refStats: refStats,
+					algorithmVersion: algorithmVersion
 				};
 
-				// 3. Process initial result (Intensity 50)
+				// 3. Process initial result (Intensity 35)
+				const debugOut: { debugInfo?: DebugInfo } = {};
 				const imgData = previewResized.ctx.getImageData(0, 0, previewResized.width, previewResized.height);
-				const processed = processImageBuffer(imgData, refStats, tgtStats, 50, 50); // Default 50, 50
+				let processed: ImageData;
+				if (algorithmVersion === 'v1') {
+					processed = processImageBuffer(imgData, refStats as ColorStats, tgtStats as ColorStats, 35, 50, 0, debugOut);
+				} else {
+					processed = processImageBufferV2(imgData, refStats as ColorStatsV2, tgtStats as ColorStatsV2, 35, 50, 0, debugOut);
+				}
 
 				// Draw to canvas to get URL
 				const canvas = document.createElement('canvas');
@@ -667,9 +1277,11 @@ export default function ColorTransfer() {
 					name: targets[i].file.name,
 					originalUrl: targets[i].url,
 					resultUrl: canvas.toDataURL('image/jpeg', 0.9),
-					intensity: 50,
+					intensity: 35,
 					shadow: 50,
-					id: i
+					saturation: 0,
+					id: i,
+					debugInfo: debugOut.debugInfo
 				});
 
 				await new Promise(r => setTimeout(r, 20)); // Yield to UI
@@ -701,12 +1313,19 @@ export default function ColorTransfer() {
 			const resInfo = results.find(r => r.id === id);
 			if (!target || !imageCache.current[id]) return;
 
-			const { ctx: previewCtx, width: previewWidth, height: previewHeight, tgtStats, refStats } = imageCache.current[id];
+			const { ctx: previewCtx, width: previewWidth, height: previewHeight, tgtStats, refStats, algorithmVersion: cachedAlg } = imageCache.current[id];
 			const currentShadow = resInfo?.shadow ?? 50;
+			const currentSaturation = resInfo?.saturation ?? 0;
 
 			// Re-process
+			const debugOut: { debugInfo?: DebugInfo } = {};
 			const imgData = previewCtx.getImageData(0, 0, previewWidth, previewHeight);
-			const processed = processImageBuffer(imgData, refStats, tgtStats, val, currentShadow);
+			let processed: ImageData;
+			if (cachedAlg === 'v1') {
+				processed = processImageBuffer(imgData, refStats as ColorStats, tgtStats as ColorStats, val, currentShadow, currentSaturation, debugOut);
+			} else {
+				processed = processImageBufferV2(imgData, refStats as ColorStatsV2, tgtStats as ColorStatsV2, val, currentShadow, currentSaturation, debugOut);
+			}
 
 			const canvas = document.createElement('canvas');
 			canvas.width = previewWidth;
@@ -714,8 +1333,42 @@ export default function ColorTransfer() {
 			const ctx = canvas.getContext('2d')!;
 			ctx.putImageData(processed, 0, 0);
 
-			setResults(prev => prev.map(r => r.id === id ? { ...r, resultUrl: canvas.toDataURL('image/jpeg', 0.9) } : r));
+			setResults(prev => prev.map(r => r.id === id ? { ...r, resultUrl: canvas.toDataURL('image/jpeg', 0.9), debugInfo: debugOut.debugInfo } : r));
 		}, 100); // 100ms debounce
+	};
+
+	// Handle individual saturation change
+	const handleSaturationChange = (id: number, val: number) => {
+		setResults(prev => prev.map(r => r.id === id ? { ...r, saturation: val } : r));
+
+		if (workerRef.current[id]) clearTimeout(workerRef.current[id]);
+		workerRef.current[id] = setTimeout(async () => {
+			const target = targets[id];
+			const resInfo = results.find(r => r.id === id);
+			if (!target || !imageCache.current[id]) return;
+
+			const { ctx: previewCtx, width: previewWidth, height: previewHeight, tgtStats, refStats, algorithmVersion: cachedAlg } = imageCache.current[id];
+			const currentIntensity = resInfo?.intensity ?? 35;
+			const currentShadow = resInfo?.shadow ?? 50;
+
+			// Re-process
+			const debugOut: { debugInfo?: DebugInfo } = {};
+			const imgData = previewCtx.getImageData(0, 0, previewWidth, previewHeight);
+			let processed: ImageData;
+			if (cachedAlg === 'v1') {
+				processed = processImageBuffer(imgData, refStats as ColorStats, tgtStats as ColorStats, currentIntensity, currentShadow, val, debugOut);
+			} else {
+				processed = processImageBufferV2(imgData, refStats as ColorStatsV2, tgtStats as ColorStatsV2, currentIntensity, currentShadow, val, debugOut);
+			}
+
+			const canvas = document.createElement('canvas');
+			canvas.width = previewWidth;
+			canvas.height = previewHeight;
+			const ctx = canvas.getContext('2d')!;
+			ctx.putImageData(processed, 0, 0);
+
+			setResults(prev => prev.map(r => r.id === id ? { ...r, resultUrl: canvas.toDataURL('image/jpeg', 0.9), debugInfo: debugOut.debugInfo } : r));
+		}, 100);
 	};
 
 	// Handle individual shadow change
@@ -729,12 +1382,19 @@ export default function ColorTransfer() {
 			const resInfo = results.find(r => r.id === id);
 			if (!target || !imageCache.current[id]) return;
 
-			const { ctx: previewCtx, width: previewWidth, height: previewHeight, tgtStats, refStats } = imageCache.current[id];
-			const currentIntensity = resInfo?.intensity ?? 50;
+			const { ctx: previewCtx, width: previewWidth, height: previewHeight, tgtStats, refStats, algorithmVersion: cachedAlg } = imageCache.current[id];
+			const currentIntensity = resInfo?.intensity ?? 35;
+			const currentSaturation = resInfo?.saturation ?? 0;
 
 			// Re-process
+			const debugOut: { debugInfo?: DebugInfo } = {};
 			const imgData = previewCtx.getImageData(0, 0, previewWidth, previewHeight);
-			const processed = processImageBuffer(imgData, refStats, tgtStats, currentIntensity, val);
+			let processed: ImageData;
+			if (cachedAlg === 'v1') {
+				processed = processImageBuffer(imgData, refStats as ColorStats, tgtStats as ColorStats, currentIntensity, val, currentSaturation, debugOut);
+			} else {
+				processed = processImageBufferV2(imgData, refStats as ColorStatsV2, tgtStats as ColorStatsV2, currentIntensity, val, currentSaturation, debugOut);
+			}
 
 			const canvas = document.createElement('canvas');
 			canvas.width = previewWidth;
@@ -742,7 +1402,7 @@ export default function ColorTransfer() {
 			const ctx = canvas.getContext('2d')!;
 			ctx.putImageData(processed, 0, 0);
 
-			setResults(prev => prev.map(r => r.id === id ? { ...r, resultUrl: canvas.toDataURL('image/jpeg', 0.9) } : r));
+			setResults(prev => prev.map(r => r.id === id ? { ...r, resultUrl: canvas.toDataURL('image/jpeg', 0.9), debugInfo: debugOut.debugInfo } : r));
 		}, 100); // 100ms debounce
 	};
 
@@ -758,7 +1418,12 @@ export default function ColorTransfer() {
 		try {
 			const zip = new JSZip();
 			const refResized = resizeImageCanvas(reference.element, RESIZE_LONG_EDGE);
-			const refStats = computeStats(refResized.ctx, refResized.width, refResized.height);
+			let refStats: ColorStats | ColorStatsV2;
+			if (algorithmVersion === 'v1') {
+				refStats = computeStats(refResized.ctx, refResized.width, refResized.height);
+			} else {
+				refStats = computeStatsV2(refResized.ctx, refResized.width, refResized.height);
+			}
 
 			for (let i = 0; i < targets.length; i++) {
 				const res = results[i];
@@ -770,11 +1435,21 @@ export default function ColorTransfer() {
 
 				// Resize target
 				const tgtResized = resizeImageCanvas(targets[i].element, RESIZE_LONG_EDGE);
-				const tgtStats = computeStats(tgtResized.ctx, tgtResized.width, tgtResized.height);
+				let tgtStats: ColorStats | ColorStatsV2;
+				if (algorithmVersion === 'v1') {
+					tgtStats = computeStats(tgtResized.ctx, tgtResized.width, tgtResized.height);
+				} else {
+					tgtStats = computeStatsV2(tgtResized.ctx, tgtResized.width, tgtResized.height);
+				}
 
 				// Process FULL size with current intensity slider value
 				const imgData = tgtResized.ctx.getImageData(0, 0, tgtResized.width, tgtResized.height);
-				const processed = processImageBuffer(imgData, refStats, tgtStats, res.intensity);
+				let processed: ImageData;
+				if (algorithmVersion === 'v1') {
+					processed = processImageBuffer(imgData, refStats as ColorStats, tgtStats as ColorStats, res.intensity, res.shadow, res.saturation);
+				} else {
+					processed = processImageBufferV2(imgData, refStats as ColorStatsV2, tgtStats as ColorStatsV2, res.intensity, res.shadow, res.saturation);
+				}
 
 				const canvas = document.createElement('canvas');
 				canvas.width = tgtResized.width;
@@ -968,7 +1643,13 @@ export default function ColorTransfer() {
 
 			{/* Header */}
 			<div className="flex flex-col items-center gap-2 mt-8 md:mt-0 pb-4">
-				<div className="flex items-center justify-center gap-3 md:gap-4 select-none">
+				<div
+					className="flex items-center justify-center gap-3 md:gap-4 select-none cursor-pointer"
+					onClick={() => {
+						setIsDebugMode(true);
+						setShowDebugPanel(prev => !prev);
+					}}
+				>
 					<img src="/logo.png" alt="iroAwase Logo" className="h-10 w-10 md:h-16 md:w-16 object-contain" />
 					<h1 className="text-3xl md:text-5xl text-white tracking-wider pb-1" style={{ fontFamily: 'var(--font-comfortaa)' }}>
 						iroAwase
@@ -1039,6 +1720,15 @@ export default function ColorTransfer() {
 											<div className="absolute inset-0 bg-black/40 opacity-0 group-hover/item:opacity-100 transition-opacity flex items-center justify-center">
 												<span className="text-[10px] text-white font-bold">#{i + 1}</span>
 											</div>
+											<button
+												onClick={(e) => { e.stopPropagation(); handleRemoveTarget(i); }}
+												className="absolute top-1 right-1 w-6 h-6 bg-black/40 hover:bg-red-500/80 rounded-full flex items-center justify-center text-white/70 hover:text-white transition-all backdrop-blur-sm z-30 opacity-70 group-hover/item:opacity-100 group-hover/item:scale-110"
+												title="削除"
+											>
+												<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2.5} stroke="currentColor" className="w-3.5 h-3.5">
+													<path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+												</svg>
+											</button>
 										</div>
 									))}
 									<div className="aspect-square flex flex-col items-center justify-center border-2 border-dashed border-white/10 rounded-xl text-[10px] text-gray-500 font-medium bg-white/5 hover:bg-white/10 hover:border-white/20 transition-all">
@@ -1064,6 +1754,31 @@ export default function ColorTransfer() {
 
 			{/* Action Area */}
 			<div className="flex flex-col items-center justify-center gap-6 py-4">
+				
+				{/* Algorithm Version Toggle */}
+				<div className="flex items-center gap-2 bg-white/5 backdrop-blur-md p-1.5 rounded-2xl border border-white/10 shadow-xl">
+					<button
+						onClick={() => setAlgorithmVersion('v1')}
+						className={`px-6 py-2 rounded-xl text-sm font-semibold transition-all ${
+							algorithmVersion === 'v1' 
+							? 'bg-indigo-500 text-white shadow-md' 
+							: 'text-gray-400 hover:text-white hover:bg-white/5'
+						}`}
+					>
+						v1 (全体)
+					</button>
+					<button
+						onClick={() => setAlgorithmVersion('v2')}
+						className={`px-6 py-2 rounded-xl text-sm font-semibold transition-all ${
+							algorithmVersion === 'v2' 
+							? 'bg-indigo-500 text-white shadow-md' 
+							: 'text-gray-400 hover:text-white hover:bg-white/5'
+						}`}
+					>
+						v2 (帯域分割)
+					</button>
+				</div>
+
 				{errorMessage && (
 					<div className="bg-red-500/10 text-red-400 px-4 py-2 rounded-lg border border-red-500/20 text-sm">
 						{errorMessage}
@@ -1108,6 +1823,14 @@ export default function ColorTransfer() {
 				<div ref={resultsRef} className="animate-slide-up space-y-8 pt-8 border-t border-gray-800 scroll-mt-8 text-center sm:text-left">
 					<div className="flex flex-col md:flex-row items-center justify-between gap-4 px-6 md:px-8">
 						<h3 className="text-3xl font-bold text-gray-200 tracking-tight">{t.resultsTitle}</h3>
+						{isDebugMode && (
+							<button
+								onClick={() => setShowDebugPanel(prev => !prev)}
+								className="px-4 py-2 bg-indigo-500/20 hover:bg-indigo-500/30 text-indigo-400 text-xs font-bold rounded-lg border border-indigo-500/30 transition-all shadow-md active:scale-95"
+							>
+								{showDebugPanel ? "デバッグ情報を非表示" : "デバッグ情報を表示"}
+							</button>
+						)}
 					</div>
 
 					<div className="space-y-12 pb-8">
@@ -1125,7 +1848,7 @@ export default function ColorTransfer() {
 									{/* Before */}
 									<div className="flex flex-col items-center gap-3 flex-1">
 										<div className="relative group w-full">
-											<img src={res.originalUrl} className="w-full h-auto rounded-lg md:rounded-xl shadow-lg grayscale-[0.3] brightness-90" alt="Before" />
+											<img src={res.originalUrl} className="w-full h-auto rounded-lg md:rounded-xl shadow-lg" alt="Before" />
 											<span className="absolute top-2 left-2 md:top-4 md:left-4 bg-black/60 backdrop-blur-md text-white text-[10px] md:text-xs px-2 py-1 md:px-3 md:py-1.5 rounded-full font-bold uppercase tracking-wider">{t.before}</span>
 										</div>
 									</div>
@@ -1145,6 +1868,212 @@ export default function ColorTransfer() {
 										</div>
 									</div>
 								</div>
+
+								{/* Debug Panel */}
+								{showDebugPanel && res.debugInfo && (
+									<div className="max-w-[800px] mx-auto w-full px-4 md:px-8">
+										<div className="bg-black/40 rounded-2xl p-4 md:p-6 border border-indigo-500/20 text-left text-xs font-mono space-y-4 text-gray-300">
+											<div className="flex justify-between items-center border-b border-white/10 pb-2">
+												<span className="text-indigo-400 font-bold">DEBUG PANEL</span>
+												<span className="text-[10px] text-gray-500">Oklab Space Stats</span>
+											</div>
+											<div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+												{/* Stats Table */}
+												<div className="space-y-2">
+													<p className="text-[10px] text-gray-400 font-bold uppercase">Basic Statistics (L & Chroma)</p>
+													<table className="w-full text-[11px] border-collapse">
+														<thead>
+															<tr className="border-b border-white/5 text-gray-500 text-left">
+																<th className="py-1">Metric</th>
+																<th className="py-1">Ref</th>
+																<th className="py-1">Target</th>
+																<th className="py-1">Output</th>
+															</tr>
+														</thead>
+														<tbody>
+															<tr className="border-b border-white/5">
+																<td className="py-1 font-bold">L Mean (Brightness)</td>
+																<td className="py-1">{res.debugInfo.refLMean.toFixed(3)}</td>
+																<td className="py-1">{res.debugInfo.tgtLMean.toFixed(3)}</td>
+																<td className="py-1 text-indigo-300">{res.debugInfo.outLMean.toFixed(3)}</td>
+															</tr>
+															<tr className="border-b border-white/5">
+																<td className="py-1 font-bold">L Std (Contrast)</td>
+																<td className="py-1">{res.debugInfo.refLStd.toFixed(3)}</td>
+																<td className="py-1">{res.debugInfo.tgtLStd.toFixed(3)}</td>
+																<td className="py-1">-</td>
+															</tr>
+															<tr className="border-b border-white/5">
+																<td className="py-1 font-bold">Chroma Mean (Sat)</td>
+																<td className="py-1">{res.debugInfo.refCMean.toFixed(3)}</td>
+																<td className="py-1">{res.debugInfo.tgtCMean.toFixed(3)}</td>
+																<td className="py-1 text-indigo-300">{res.debugInfo.outCMean.toFixed(3)}</td>
+															</tr>
+														</tbody>
+													</table>
+												</div>
+
+												{/* Color tendency (a, b) */}
+												<div className="space-y-2">
+													<p className="text-[10px] text-gray-400 font-bold uppercase">Color Tendency (a, b)</p>
+													<table className="w-full text-[11px] border-collapse">
+														<thead>
+															<tr className="border-b border-white/5 text-gray-500 text-left">
+																<th className="py-1">Axis</th>
+																<th className="py-1">Ref</th>
+																<th className="py-1">Target</th>
+																<th className="py-1">Output</th>
+															</tr>
+														</thead>
+														<tbody>
+															<tr className="border-b border-white/5">
+																<td className="py-1 font-bold">a (Green-Red)</td>
+																<td className="py-1">{res.debugInfo.refAMean.toFixed(3)}</td>
+																<td className="py-1">{res.debugInfo.tgtAMean.toFixed(3)}</td>
+																<td className="py-1 text-indigo-300">{res.debugInfo.outAMean.toFixed(3)}</td>
+															</tr>
+															<tr className="border-b border-white/5">
+																<td className="py-1 font-bold">b (Blue-Yellow)</td>
+																<td className="py-1">{res.debugInfo.refBMean.toFixed(3)}</td>
+																<td className="py-1">{res.debugInfo.tgtBMean.toFixed(3)}</td>
+																<td className="py-1 text-indigo-300">{res.debugInfo.outBMean.toFixed(3)}</td>
+															</tr>
+														</tbody>
+													</table>
+												</div>
+											</div>
+
+											{/* Algorithmic variables */}
+											<div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-2 border-t border-white/10">
+												<div className="space-y-1">
+													<p className="text-[10px] text-gray-400 font-bold uppercase">Clamp Execution Rate</p>
+													<div className="flex justify-between text-[11px]">
+														<span>Lightness (L) Clamp:</span>
+														<span className={res.debugInfo.clampedLPercent > 50 ? "text-red-400 font-bold" : "text-gray-300"}>
+															{res.debugInfo.clampedLPercent.toFixed(1)}%
+														</span>
+													</div>
+													<div className="flex justify-between text-[11px]">
+														<span>Chroma (C) Clamp:</span>
+														<span className={res.debugInfo.clampedCPercent > 50 ? "text-red-400 font-bold" : "text-gray-300"}>
+															{res.debugInfo.clampedCPercent.toFixed(1)}%
+														</span>
+													</div>
+												</div>
+												<div className="space-y-1">
+													<p className="text-[10px] text-gray-400 font-bold uppercase">Distance and Attenuation</p>
+													<div className="flex justify-between text-[11px]">
+														<span>Oklab Distance (D):</span>
+														<span>{res.debugInfo.distance.toFixed(3)}</span>
+													</div>
+													<div className="flex justify-between text-[11px]">
+														<span>Distance Factor:</span>
+														<span className="text-emerald-400 font-bold">{res.debugInfo.distanceFactor.toFixed(3)}</span>
+													</div>
+													<div className="flex justify-between text-[11px]">
+														<span>Scale A Std (Cap Applied):</span>
+														<span className={res.debugInfo.scaleA_std !== undefined && res.debugInfo.scaleA_std < 0.75 ? "text-red-400 font-bold" : "text-gray-300"}>
+															{res.debugInfo.scaleA_std?.toFixed(3) ?? '-'}
+														</span>
+													</div>
+													<div className="flex justify-between text-[11px]">
+														<span>Scale B Std (Cap Applied):</span>
+														<span className={res.debugInfo.scaleB_std !== undefined && res.debugInfo.scaleB_std < 0.75 ? "text-red-400 font-bold" : "text-gray-300"}>
+															{res.debugInfo.scaleB_std?.toFixed(3) ?? '-'}
+														</span>
+													</div>
+												</div>
+											</div>
+
+											{/* V2 Band Statistics */}
+											{res.debugInfo.bandRatios && res.debugInfo.bandConfidences && (
+												<div className="pt-2 border-t border-white/10 space-y-2">
+													<p className="text-[10px] text-indigo-300 font-bold uppercase">V2 Band Statistics (Ratio / Blend to Mid)</p>
+													<table className="w-full text-[11px] border-collapse">
+														<thead>
+															<tr className="border-b border-white/5 text-gray-500 text-left">
+																<th className="py-1">Band</th>
+																<th className="py-1">L Shadow</th>
+																<th className="py-1">L Highlight</th>
+																<th className="py-1">C Shadow</th>
+																<th className="py-1">C Highlight</th>
+															</tr>
+														</thead>
+														<tbody>
+															<tr className="border-b border-white/5">
+																<td className="py-1 font-bold">Pixel Ratio</td>
+																<td className={`py-1 ${(res.debugInfo.bandRatios.lShadow < MIN_BAND_PIXEL_RATIO) ? "text-red-400 font-bold" : ""}`}>
+																	{(res.debugInfo.bandRatios.lShadow * 100).toFixed(1)}%
+																</td>
+																<td className={`py-1 ${(res.debugInfo.bandRatios.lHighlight < MIN_BAND_PIXEL_RATIO) ? "text-red-400 font-bold" : ""}`}>
+																	{(res.debugInfo.bandRatios.lHighlight * 100).toFixed(1)}%
+																</td>
+																<td className={`py-1 ${(res.debugInfo.bandRatios.cShadow < MIN_BAND_PIXEL_RATIO) ? "text-red-400 font-bold" : ""}`}>
+																	{(res.debugInfo.bandRatios.cShadow * 100).toFixed(1)}%
+																</td>
+																<td className={`py-1 ${(res.debugInfo.bandRatios.cHighlight < MIN_BAND_PIXEL_RATIO) ? "text-red-400 font-bold" : ""}`}>
+																	{(res.debugInfo.bandRatios.cHighlight * 100).toFixed(1)}%
+																</td>
+															</tr>
+															<tr className="border-b border-white/5">
+																<td className="py-1 font-bold">Mid Blend</td>
+																<td className="py-1 text-orange-300">
+																	{((1 - res.debugInfo.bandConfidences.lShadow) * 100).toFixed(1)}%
+																</td>
+																<td className="py-1 text-orange-300">
+																	{((1 - res.debugInfo.bandConfidences.lHighlight) * 100).toFixed(1)}%
+																</td>
+																<td className="py-1 text-orange-300">
+																	{((1 - res.debugInfo.bandConfidences.cShadow) * 100).toFixed(1)}%
+																</td>
+																<td className="py-1 text-orange-300">
+																	{((1 - res.debugInfo.bandConfidences.cHighlight) * 100).toFixed(1)}%
+																</td>
+															</tr>
+														</tbody>
+													</table>
+												</div>
+											)}
+											
+											{/* V2 Band Coefficients */}
+											{res.debugInfo.bandCoeffs && (
+												<div className="pt-2 border-t border-white/10 space-y-2">
+													<p className="text-[10px] text-indigo-300 font-bold uppercase">V2 Band Coefficients (A / B)</p>
+													<table className="w-full text-[11px] border-collapse">
+														<thead>
+															<tr className="border-b border-white/5 text-gray-500 text-left">
+																<th className="py-1">Metric</th>
+																<th className="py-1">Shadow</th>
+																<th className="py-1">Mid</th>
+																<th className="py-1">Highlight</th>
+															</tr>
+														</thead>
+														<tbody>
+															<tr className="border-b border-white/5">
+																<td className="py-1 font-bold">L (A factor)</td>
+																<td className="py-1">{res.debugInfo.bandCoeffs.lShadow.A.toFixed(3)}</td>
+																<td className="py-1 font-bold text-indigo-300">{res.debugInfo.bandCoeffs.lMid.A.toFixed(3)}</td>
+																<td className="py-1">{res.debugInfo.bandCoeffs.lHighlight.A.toFixed(3)}</td>
+															</tr>
+															<tr className="border-b border-white/5">
+																<td className="py-1 font-bold">L (B factor)</td>
+																<td className="py-1">{res.debugInfo.bandCoeffs.lShadow.B.toFixed(3)}</td>
+																<td className="py-1 font-bold text-indigo-300">{res.debugInfo.bandCoeffs.lMid.B.toFixed(3)}</td>
+																<td className="py-1">{res.debugInfo.bandCoeffs.lHighlight.B.toFixed(3)}</td>
+															</tr>
+															<tr className="border-b border-white/5">
+																<td className="py-1 font-bold">C (A factor)</td>
+																<td className="py-1">{res.debugInfo.bandCoeffs.cShadow.toFixed(3)}</td>
+																<td className="py-1 font-bold text-indigo-300">{res.debugInfo.bandCoeffs.cMid.toFixed(3)}</td>
+																<td className="py-1">{res.debugInfo.bandCoeffs.cHighlight.toFixed(3)}</td>
+															</tr>
+														</tbody>
+													</table>
+												</div>
+											)}
+										</div>
+									</div>
+								)}
 
 								{/* Slider Control */}
 								<div className="max-w-[800px] mx-auto w-full px-4 md:px-8">
@@ -1171,21 +2100,49 @@ export default function ColorTransfer() {
 											</div>
 										</div>
 
-										{/* Shadow Slider (Hidden as per request, tuned default 50 is used) */}
-										{/* <div className="flex flex-col gap-1.5">
-											<div className="flex justify-between text-xs text-gray-400">
-												<span>Shadows (黒レベル)</span>
-												<span>{res.shadow}%</span>
+										<div className="flex justify-between items-center mt-6 mb-4">
+											<span className="text-[10px] md:text-xs font-bold text-gray-400 uppercase tracking-widest leading-none">Saturation</span>
+										</div>
+										<div className="flex flex-col gap-3">
+											<div className="flex justify-between text-[10px] text-gray-500 font-bold uppercase tracking-tighter px-1">
+												<span>-50 (Desaturate)</span>
+												<span className="text-indigo-400/80">0 (Auto)</span>
+												<span>+50 (Saturate)</span>
 											</div>
-											<input
-												type="range"
-												min="0"
-												max="100"
-												value={res.shadow}
-												onChange={(e) => handleShadowChange(res.id, parseInt(e.target.value))}
-												className="w-full h-1.5 bg-white/10 rounded-full appearance-none cursor-pointer accent-indigo-500 hover:accent-indigo-400 transition-all"
-											/>
-										</div> */}
+											<div className="flex items-center gap-4">
+												<input
+													type="range"
+													min="-50"
+													max="50"
+													value={res.saturation}
+													onChange={(e) => handleSaturationChange(i, parseInt(e.target.value))}
+													className="flex-1 h-1.5 bg-white/10 rounded-full appearance-none cursor-pointer accent-indigo-500 hover:accent-indigo-400 transition-all"
+												/>
+												<span className="w-10 text-right font-mono text-indigo-400 text-sm font-bold">{res.saturation > 0 ? `+${res.saturation}` : res.saturation}</span>
+											</div>
+										</div>
+
+										<div className="flex justify-between items-center mt-6 mb-4">
+											<span className="text-[10px] md:text-xs font-bold text-gray-400 uppercase tracking-widest leading-none">Shadow</span>
+										</div>
+										<div className="flex flex-col gap-3">
+											<div className="flex justify-between text-[10px] text-gray-500 font-bold uppercase tracking-tighter px-1">
+												<span>0 (Soft)</span>
+												<span className="text-indigo-400/80">50 (Standard)</span>
+												<span>100 (Crush)</span>
+											</div>
+											<div className="flex items-center gap-4">
+												<input
+													type="range"
+													min="0"
+													max="100"
+													value={res.shadow}
+													onChange={(e) => handleShadowChange(i, parseInt(e.target.value))}
+													className="flex-1 h-1.5 bg-white/10 rounded-full appearance-none cursor-pointer accent-indigo-500 hover:accent-indigo-400 transition-all"
+												/>
+												<span className="w-10 text-right font-mono text-indigo-400 text-sm font-bold">{res.shadow}</span>
+											</div>
+										</div>
 									</div>
 								</div>
 							</div>
