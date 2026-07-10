@@ -388,8 +388,8 @@ const computeStats = (ctx: CanvasRenderingContext2D, width: number, height: numb
 
 // --- v2 Algorithm Types & Constants ---
 const OUTLIER_PERCENT = 0.02; // 上下2%を除外
-const OVERLAP_PERCENT = 0.5; // (t66 - t33) の間隔に対するオーバーラップの割合 (50%)
-const MIN_BAND_PIXEL_RATIO = 0.15; // 信頼度を下げるピクセル数の割合の閾値 (テストのため一時的に15%)
+const OVERLAP_PERCENT = 0.15; // 境界の前後15%をオーバーラップ
+const MIN_BAND_PIXEL_RATIO = 0.05; // 信頼度を下げるピクセル数の割合の閾値 (5%)
 
 interface BandStat {
 	mean: number;
@@ -420,32 +420,25 @@ interface ColorStatsV2 {
 	};
 }
 
-// 境界から重みを計算する関数（なめらかなブレンド）
+// 境界から重みを計算する関数（台形型）
 // 戻り値: [shadowWeight, midWeight, highlightWeight]
-function smoothstep(edge0: number, edge1: number, x: number): number {
-	const t = Math.max(0, Math.min(1, (x - edge0) / (edge1 - edge0)));
-	return t * t * (3 - 2 * t);
-}
-
-function calculateBandWeights(value: number, t33: number, t66: number, min: number, max: number, overlapRatio: number): [number, number, number] {
-	const bandRange = t66 - t33;
-	if (bandRange <= 0.001) return [0, 1, 0]; // 分布が極端に狭い場合はすべてmidとする
+function calculateBandWeights(value: number, t33: number, t66: number, min: number, max: number, overlapPercent: number): [number, number, number] {
+	const range = max - min;
+	if (range <= 0.001) return [0, 1, 0]; // 範囲が狭すぎる場合はすべてmidとする
 	
-	// のり代（オーバーラップ）が狭すぎるとトーンジャンプや粒状ノイズの原因になるため下限を設ける
-	const MIN_OVERLAP = 0.05;
-	const overlap = Math.max(MIN_OVERLAP, bandRange * overlapRatio);
+	const overlap = range * overlapPercent;
 	
 	let wS = 0, wM = 0, wH = 0;
 	
 	if (value <= t33 - overlap) {
 		wS = 1;
 	} else if (value < t33 + overlap) {
-		wM = smoothstep(t33 - overlap, t33 + overlap, value);
+		wM = (value - (t33 - overlap)) / (2 * overlap);
 		wS = 1 - wM;
 	} else if (value <= t66 - overlap) {
 		wM = 1;
 	} else if (value < t66 + overlap) {
-		wH = smoothstep(t66 - overlap, t66 + overlap, value);
+		wH = (value - (t66 - overlap)) / (2 * overlap);
 		wM = 1 - wH;
 	} else {
 		wH = 1;
@@ -883,9 +876,9 @@ export default function ColorTransfer() {
 			const B = (refL.mean - tgtL.mean * scale_std) * k * BLEND_MEAN_L;
 			return { A, B };
 		}
-		const coeffLS_raw = calcLCoeff(tgtStats.lBands.shadow, refStats.lBands.shadow);
+		const coeffLS = calcLCoeff(tgtStats.lBands.shadow, refStats.lBands.shadow);
 		const coeffLM = calcLCoeff(tgtStats.lBands.mid, refStats.lBands.mid);
-		const coeffLH_raw = calcLCoeff(tgtStats.lBands.highlight, refStats.lBands.highlight);
+		const coeffLH = calcLCoeff(tgtStats.lBands.highlight, refStats.lBands.highlight);
 
 		function calcCCoeff(tgtC: BandStat, refC: BandStat) {
 			const effRefStd = Math.min(refC.std, REF_STD_CAP);
@@ -895,26 +888,9 @@ export default function ColorTransfer() {
 			const A_C = 1 + (scale_std - 1) * k;
 			return A_C;
 		}
-		const coeffCS_raw = calcCCoeff(tgtStats.cBands.shadow, refStats.cBands.shadow);
+		const coeffCS = calcCCoeff(tgtStats.cBands.shadow, refStats.cBands.shadow);
 		const coeffCM = calcCCoeff(tgtStats.cBands.mid, refStats.cBands.mid);
-		const coeffCH_raw = calcCCoeff(tgtStats.cBands.highlight, refStats.cBands.highlight);
-
-		// 帯域間の極端な変換差異によるトーンジャンプ（粒状ノイズ）を防ぐためのガード
-		const MAX_A_RATIO = 1.35; // Mid帯域のA係数に対して、Shadow/Highlightは0.74〜1.35倍までに制限
-		const MIN_A_RATIO = 1.0 / MAX_A_RATIO;
-		const MAX_B_DIFF = 0.08; // B係数（シフト量）の差の絶対値を制限
-
-		const coeffLS = {
-			A: Math.max(coeffLM.A * MIN_A_RATIO, Math.min(coeffLM.A * MAX_A_RATIO, coeffLS_raw.A)),
-			B: Math.max(coeffLM.B - MAX_B_DIFF, Math.min(coeffLM.B + MAX_B_DIFF, coeffLS_raw.B))
-		};
-		const coeffLH = {
-			A: Math.max(coeffLM.A * MIN_A_RATIO, Math.min(coeffLM.A * MAX_A_RATIO, coeffLH_raw.A)),
-			B: Math.max(coeffLM.B - MAX_B_DIFF, Math.min(coeffLM.B + MAX_B_DIFF, coeffLH_raw.B))
-		};
-		
-		const coeffCS = Math.max(coeffCM * MIN_A_RATIO, Math.min(coeffCM * MAX_A_RATIO, coeffCS_raw));
-		const coeffCH = Math.max(coeffCM * MIN_A_RATIO, Math.min(coeffCM * MAX_A_RATIO, coeffCH_raw));
+		const coeffCH = calcCCoeff(tgtStats.cBands.highlight, refStats.cBands.highlight);
 
 		const globalRawScaleA = (tgtStats.globalA.std > 0.01) ? Math.min(SCALE_CAP, Math.min(refStats.globalA.std, REF_STD_CAP) / tgtStats.globalA.std) : 1;
 		const globalScaleA = Math.max(SCALE_FLOOR, 1.0 + (globalRawScaleA - 1.0) * BLEND_STD);
