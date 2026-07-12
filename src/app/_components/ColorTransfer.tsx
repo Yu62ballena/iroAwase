@@ -59,6 +59,9 @@ const TRANSLATIONS = {
 		btnReset: "リセットして最初に戻る ↺",
 		resultsTitle: "変換結果",
 		galleryTitle: "一覧プレビュー",
+		sliderIntensity: "補正の強さ",
+		sliderSaturation: "彩度",
+		sliderShadow: "シャドウ",
 		labelOriginal: "元画像",
 		labelStandard: "標準",
 		labelIntense: "強め",
@@ -104,6 +107,9 @@ const TRANSLATIONS = {
 		btnReset: "Reset All ↺",
 		resultsTitle: "Processing Results",
 		galleryTitle: "Gallery Preview",
+		sliderIntensity: "Adjustment Intensity",
+		sliderSaturation: "Saturation",
+		sliderShadow: "Shadow",
 		labelOriginal: "Original",
 		labelStandard: "Standard",
 		labelIntense: "Intense",
@@ -1738,30 +1744,6 @@ export default function ColorTransfer() {
 
 			{/* Action Area */}
 			<div className="flex flex-col items-center justify-center gap-6 py-4">
-				
-				{/* Algorithm Version Toggle */}
-				<div className="flex items-center gap-2 bg-white/5 backdrop-blur-md p-1.5 rounded-2xl border border-white/10 shadow-xl">
-					<button
-						onClick={() => setAlgorithmVersion('v1')}
-						className={`px-6 py-2 rounded-xl text-sm font-semibold transition-all ${
-							algorithmVersion === 'v1' 
-							? 'bg-indigo-500 text-white shadow-md' 
-							: 'text-gray-400 hover:text-white hover:bg-white/5'
-						}`}
-					>
-						v1 (全体)
-					</button>
-					<button
-						onClick={() => setAlgorithmVersion('v2')}
-						className={`px-6 py-2 rounded-xl text-sm font-semibold transition-all ${
-							algorithmVersion === 'v2' 
-							? 'bg-indigo-500 text-white shadow-md' 
-							: 'text-gray-400 hover:text-white hover:bg-white/5'
-						}`}
-					>
-						v2 (帯域分割)
-					</button>
-				</div>
 
 				{errorMessage && (
 					<div className="bg-red-500/10 text-red-400 px-4 py-2 rounded-lg border border-red-500/20 text-sm">
@@ -2109,7 +2091,7 @@ export default function ColorTransfer() {
 										{/* Intensity */}
 										<div className="flex flex-col gap-3">
 											<div className="flex justify-between items-center">
-												<span className="text-[10px] md:text-xs font-bold text-gray-400 uppercase tracking-widest leading-none">Adjustment Intensity</span>
+												<span className="text-[10px] md:text-xs font-bold text-gray-400 uppercase tracking-widest leading-none">{t.sliderIntensity}</span>
 											</div>
 											<div className="flex justify-between text-[10px] text-gray-500 font-bold uppercase tracking-tighter px-1 mt-1">
 												<span>{t.labelOriginal}</span>
@@ -2132,7 +2114,7 @@ export default function ColorTransfer() {
 										{/* Saturation */}
 										<div className="flex flex-col gap-3 mt-4 md:mt-0 pt-4 md:pt-0 border-t md:border-t-0 border-white/5 md:border-l md:border-white/10 md:pl-8">
 											<div className="flex justify-between items-center">
-												<span className="text-[10px] md:text-xs font-bold text-gray-400 uppercase tracking-widest leading-none">Saturation</span>
+												<span className="text-[10px] md:text-xs font-bold text-gray-400 uppercase tracking-widest leading-none">{t.sliderSaturation}</span>
 											</div>
 											<div className="flex justify-between text-[10px] text-gray-500 font-bold uppercase tracking-tighter px-1 mt-1">
 												<span>-50</span>
@@ -2155,7 +2137,7 @@ export default function ColorTransfer() {
 										{/* Shadow */}
 										<div className="flex flex-col gap-3 mt-4 md:mt-0 pt-4 md:pt-0 border-t md:border-t-0 border-white/5 md:border-l md:border-white/10 md:pl-8">
 											<div className="flex justify-between items-center">
-												<span className="text-[10px] md:text-xs font-bold text-gray-400 uppercase tracking-widest leading-none">Shadow</span>
+												<span className="text-[10px] md:text-xs font-bold text-gray-400 uppercase tracking-widest leading-none">{t.sliderShadow}</span>
 											</div>
 											<div className="flex justify-between text-[10px] text-gray-500 font-bold uppercase tracking-tighter px-1 mt-1">
 												<span>0</span>
