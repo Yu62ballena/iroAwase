@@ -630,6 +630,55 @@ export default function ColorTransfer() {
 		cardRefs.current[id]?.scrollIntoView({ behavior: 'smooth', block: 'start' });
 	};
 
+	const [activeCardId, setActiveCardId] = useState<number | null>(null);
+	const [isMobileGalleryOpen, setIsMobileGalleryOpen] = useState(false);
+	const sidebarListRef = useRef<HTMLDivElement>(null);
+	const mobileListRef = useRef<HTMLDivElement>(null);
+
+	// Setup IntersectionObserver for auto-scroll tracking
+	useEffect(() => {
+		if (results.length === 0) return;
+
+		const observer = new IntersectionObserver((entries) => {
+			entries.forEach(entry => {
+				if (entry.isIntersecting) {
+					const idStr = (entry.target as HTMLElement).dataset.cardId;
+					if (idStr) {
+						const id = Number(idStr);
+						if (!isNaN(id)) {
+							setActiveCardId(id);
+						}
+					}
+				}
+			});
+		}, {
+			root: null,
+			rootMargin: '-30% 0px -60% 0px',
+			threshold: 0
+		});
+
+		Object.values(cardRefs.current).forEach(el => {
+			if (el) observer.observe(el);
+		});
+
+		return () => observer.disconnect();
+	}, [results.length]);
+
+	// Auto scroll sidebar / mobile gallery when active card changes
+	useEffect(() => {
+		if (activeCardId === null) return;
+		
+		const sideBtn = sidebarListRef.current?.querySelector(`[data-thumb-id="${activeCardId}"]`);
+		if (sideBtn) {
+			sideBtn.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+		}
+
+		const mobBtn = mobileListRef.current?.querySelector(`[data-thumb-id="${activeCardId}"]`);
+		if (mobBtn) {
+			mobBtn.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' });
+		}
+	}, [activeCardId]);
+
 	const imageCache = useRef<{
 		[id: number]: {
 			ctx: CanvasRenderingContext2D, // Original preview context (resized)
@@ -1723,7 +1772,7 @@ export default function ColorTransfer() {
 				<button
 					onClick={executeColorTransfer}
 					disabled={!reference || targets.length === 0 || processStatus.isProcessing}
-					className="px-32 py-6 rounded-2xl font-bold text-2xl text-white shadow-2xl bg-indigo-600 hover:bg-indigo-500 transition-all transform hover:-translate-y-1 active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed disabled:transform-none whitespace-nowrap border border-white/10"
+					className="px-8 md:px-32 py-4 md:py-6 rounded-xl md:rounded-2xl font-bold text-lg md:text-2xl text-white shadow-2xl bg-indigo-600 hover:bg-indigo-500 transition-all transform hover:-translate-y-1 active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed disabled:transform-none whitespace-nowrap border border-white/10"
 				>
 					{processStatus.isProcessing ? (
 						<span className="flex items-center gap-3">
@@ -1768,34 +1817,94 @@ export default function ColorTransfer() {
 						)}
 					</div>
 
-					{/* Gallery Preview: 補正後画像の一覧 */}
-					{results.length >= 2 && (
-						<div className="px-6 md:px-8 space-y-3">
-							<p className="text-xs font-bold text-gray-400 uppercase tracking-widest text-left">{t.galleryTitle}</p>
-							<div className="flex flex-wrap gap-3 justify-center sm:justify-start">
-								{results.map((res) => (
-									<button
-										key={res.id}
-										onClick={() => scrollToResultCard(res.id)}
-										className="relative w-28 h-28 md:w-36 md:h-36 rounded-xl overflow-hidden border border-white/10 hover:border-indigo-400/60 transition-all shadow-lg active:scale-95 group"
-										title={res.name}
-									>
-										<img src={res.resultUrl} className="w-full h-full object-cover" alt={res.name} />
-										<span className="absolute bottom-1 left-1 right-1 text-[9px] text-white/90 bg-black/50 backdrop-blur-sm rounded px-1 py-0.5 truncate opacity-0 group-hover:opacity-100 transition-opacity">
-											{res.name}
-										</span>
-									</button>
-								))}
+					<div className="flex flex-col md:flex-row relative items-start">
+						{/* Left Sidebar Panel (PC only) */}
+						{results.length >= 2 && reference && (
+							<div className="hidden md:flex flex-col w-[240px] shrink-0 sticky top-8 h-[calc(100vh-4rem)] overflow-y-auto px-6 border-r border-white/10" style={{ scrollbarWidth: 'none' }}>
+								<p className="text-xs font-bold text-gray-400 uppercase tracking-widest text-left mb-4">Reference</p>
+								<div className="relative w-full aspect-square rounded-xl overflow-hidden border-2 border-indigo-500/50 shadow-lg mb-8 shrink-0">
+									<img src={reference.url} className="w-full h-full object-cover" alt="Reference" />
+								</div>
+								
+								<p className="text-xs font-bold text-gray-400 uppercase tracking-widest text-left mb-4">{t.galleryTitle}</p>
+								<div className="flex flex-col gap-3 items-end pr-2 pb-8" ref={sidebarListRef}>
+									{results.map((res) => (
+										<button
+											key={`side-${res.id}`}
+											onClick={() => scrollToResultCard(res.id)}
+											data-thumb-id={res.id}
+											className={`relative w-24 h-24 shrink-0 rounded-xl overflow-hidden border transition-all shadow-lg group ${activeCardId === res.id ? 'border-indigo-400 border-2' : 'border-white/10 hover:border-indigo-400/60'}`}
+											title={res.name}
+										>
+											<img src={res.resultUrl} className="w-full h-full object-cover" alt={res.name} />
+											<span className={`absolute bottom-1 left-1 right-1 text-[9px] text-white/90 bg-black/50 backdrop-blur-sm rounded px-1 py-0.5 truncate transition-opacity ${activeCardId === res.id ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'}`}>
+												{res.name}
+											</span>
+										</button>
+									))}
+								</div>
 							</div>
-						</div>
-					)}
+						)}
 
-					<div className="space-y-12 pb-8">
-						{results.map((res, i) => (
+						{/* Right Main Area */}
+						<div className="flex-1 w-full overflow-hidden">
+							{/* Mobile Gallery Floating Button & Drawer */}
+							{results.length >= 2 && reference && (
+								<>
+									{/* Toggle Button */}
+									<button
+										onClick={() => setIsMobileGalleryOpen(!isMobileGalleryOpen)}
+										className="md:hidden fixed bottom-24 right-4 z-50 bg-indigo-600/90 backdrop-blur-md text-white rounded-full p-4 shadow-[0_0_20px_rgba(79,70,229,0.3)] border border-white/20 flex items-center justify-center transition-transform hover:scale-105 active:scale-95"
+									>
+										<svg className={`w-6 h-6 transition-transform duration-300 ${isMobileGalleryOpen ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+											<path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16m-7 6h7" />
+										</svg>
+									</button>
+
+									{/* Drawer */}
+									<div className={`md:hidden fixed bottom-[5.5rem] left-4 right-[4.5rem] z-40 bg-[#0a0a0e]/95 backdrop-blur-2xl border border-white/10 rounded-2xl p-4 shadow-2xl transition-all duration-300 transform origin-bottom ${isMobileGalleryOpen ? 'scale-y-100 opacity-100 translate-y-0' : 'scale-y-95 opacity-0 translate-y-4 pointer-events-none'}`}>
+										<p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest text-left mb-3">{t.galleryTitle}</p>
+										<div className="flex items-center gap-3">
+											{/* お手本画像 (Reference) & 縦線 */}
+											<div className="flex items-center gap-3 shrink-0">
+												<div className="relative w-20 h-20 rounded-xl overflow-hidden border-2 border-indigo-500/50 shadow-lg">
+													<img src={reference.url} className="w-full h-full object-cover" alt="Reference" />
+													<span className="absolute bottom-0.5 left-0.5 right-0.5 text-[8px] text-white/90 bg-black/50 backdrop-blur-sm rounded px-1 py-0.5 truncate text-center">
+														Ref
+													</span>
+												</div>
+												<div className="h-16 w-[1px] bg-white/20"></div>
+											</div>
+
+											{/* 補正後画像群 (Scrollable) */}
+											<div className="flex gap-2 overflow-x-auto pb-2 flex-nowrap" style={{ scrollbarWidth: 'none' }} ref={mobileListRef}>
+												{results.map((res) => (
+													<button
+														key={`mob-${res.id}`}
+														onClick={() => scrollToResultCard(res.id)}
+														data-thumb-id={res.id}
+														className={`relative shrink-0 w-20 h-20 rounded-xl overflow-hidden border transition-all shadow-lg active:scale-95 group ${activeCardId === res.id ? 'border-indigo-400 border-2' : 'border-white/10'}`}
+														title={res.name}
+													>
+														<img src={res.resultUrl} className="w-full h-full object-cover" alt={res.name} />
+														<span className={`absolute bottom-0.5 left-0.5 right-0.5 text-[8px] text-white/90 bg-black/50 backdrop-blur-sm rounded px-1 py-0.5 truncate text-center transition-opacity ${activeCardId === res.id ? 'opacity-100' : 'opacity-0'}`}>
+															{res.name}
+														</span>
+													</button>
+												))}
+											</div>
+										</div>
+									</div>
+								</>
+							)}
+
+							<div className="space-y-12 pb-8">
+								{results.map((res, i) => (
 							<div
 								key={i}
 								ref={(el) => { cardRefs.current[res.id] = el; }}
-								className="space-y-6 bg-white/5 backdrop-blur-md py-8 rounded-3xl border border-white/10 md:mx-4 shadow-2xl transition-all hover:bg-white/[0.07] hover:border-white/20 scroll-mt-8"
+								data-card-id={res.id}
+								className={`space-y-6 bg-white/5 backdrop-blur-md py-8 rounded-3xl border transition-all shadow-2xl hover:bg-white/[0.07] scroll-mt-8 ${activeCardId === res.id ? 'border-indigo-500/50' : 'border-white/10 hover:border-white/20'} md:mx-4`}
 							>
 								<div className="flex justify-between items-center px-8">
 									<h4 className="text-gray-300 font-bold flex items-center gap-2">
@@ -1995,13 +2104,14 @@ export default function ColorTransfer() {
 								)}
 
 								{/* Slider Control */}
-								<div className="max-w-[800px] mx-auto w-full px-4 md:px-8">
-									<div className="bg-black/20 rounded-2xl p-4 md:p-6 border border-white/5">
-										<div className="flex justify-between items-center mb-4">
-											<span className="text-[10px] md:text-xs font-bold text-gray-400 uppercase tracking-widest leading-none">Adjustment Intensity</span>
-										</div>
+								<div className="max-w-[1000px] mx-auto w-full px-4 md:px-8">
+									<div className="bg-black/20 rounded-2xl p-4 md:p-6 border border-white/5 grid grid-cols-1 md:grid-cols-3 gap-6 md:gap-8">
+										{/* Intensity */}
 										<div className="flex flex-col gap-3">
-											<div className="flex justify-between text-[10px] text-gray-500 font-bold uppercase tracking-tighter px-1">
+											<div className="flex justify-between items-center">
+												<span className="text-[10px] md:text-xs font-bold text-gray-400 uppercase tracking-widest leading-none">Adjustment Intensity</span>
+											</div>
+											<div className="flex justify-between text-[10px] text-gray-500 font-bold uppercase tracking-tighter px-1 mt-1">
 												<span>{t.labelOriginal}</span>
 												<span className="text-indigo-400/80">{t.labelStandard}</span>
 												<span>{t.labelIntense}</span>
@@ -2015,18 +2125,19 @@ export default function ColorTransfer() {
 													onChange={(e) => handleIntensityChange(i, parseInt(e.target.value))}
 													className="flex-1 h-1.5 bg-white/10 rounded-full appearance-none cursor-pointer accent-indigo-500 hover:accent-indigo-400 transition-all"
 												/>
-												<span className="w-10 text-right font-mono text-indigo-400 text-sm font-bold">{res.intensity}</span>
+												<span className="w-8 text-right font-mono text-indigo-400 text-sm font-bold">{res.intensity}</span>
 											</div>
 										</div>
 
-										<div className="flex justify-between items-center mt-6 mb-4">
-											<span className="text-[10px] md:text-xs font-bold text-gray-400 uppercase tracking-widest leading-none">Saturation</span>
-										</div>
-										<div className="flex flex-col gap-3">
-											<div className="flex justify-between text-[10px] text-gray-500 font-bold uppercase tracking-tighter px-1">
-												<span>-50 (Desaturate)</span>
-												<span className="text-indigo-400/80">0 (Auto)</span>
-												<span>+50 (Saturate)</span>
+										{/* Saturation */}
+										<div className="flex flex-col gap-3 mt-4 md:mt-0 pt-4 md:pt-0 border-t md:border-t-0 border-white/5 md:border-l md:border-white/10 md:pl-8">
+											<div className="flex justify-between items-center">
+												<span className="text-[10px] md:text-xs font-bold text-gray-400 uppercase tracking-widest leading-none">Saturation</span>
+											</div>
+											<div className="flex justify-between text-[10px] text-gray-500 font-bold uppercase tracking-tighter px-1 mt-1">
+												<span>-50</span>
+												<span className="text-indigo-400/80">0</span>
+												<span>+50</span>
 											</div>
 											<div className="flex items-center gap-4">
 												<input
@@ -2037,18 +2148,19 @@ export default function ColorTransfer() {
 													onChange={(e) => handleSaturationChange(i, parseInt(e.target.value))}
 													className="flex-1 h-1.5 bg-white/10 rounded-full appearance-none cursor-pointer accent-indigo-500 hover:accent-indigo-400 transition-all"
 												/>
-												<span className="w-10 text-right font-mono text-indigo-400 text-sm font-bold">{res.saturation > 0 ? `+${res.saturation}` : res.saturation}</span>
+												<span className="w-8 text-right font-mono text-indigo-400 text-sm font-bold">{res.saturation > 0 ? `+${res.saturation}` : res.saturation}</span>
 											</div>
 										</div>
 
-										<div className="flex justify-between items-center mt-6 mb-4">
-											<span className="text-[10px] md:text-xs font-bold text-gray-400 uppercase tracking-widest leading-none">Shadow</span>
-										</div>
-										<div className="flex flex-col gap-3">
-											<div className="flex justify-between text-[10px] text-gray-500 font-bold uppercase tracking-tighter px-1">
-												<span>0 (Soft)</span>
-												<span className="text-indigo-400/80">50 (Standard)</span>
-												<span>100 (Crush)</span>
+										{/* Shadow */}
+										<div className="flex flex-col gap-3 mt-4 md:mt-0 pt-4 md:pt-0 border-t md:border-t-0 border-white/5 md:border-l md:border-white/10 md:pl-8">
+											<div className="flex justify-between items-center">
+												<span className="text-[10px] md:text-xs font-bold text-gray-400 uppercase tracking-widest leading-none">Shadow</span>
+											</div>
+											<div className="flex justify-between text-[10px] text-gray-500 font-bold uppercase tracking-tighter px-1 mt-1">
+												<span>0</span>
+												<span className="text-indigo-400/80">50</span>
+												<span>100</span>
 											</div>
 											<div className="flex items-center gap-4">
 												<input
@@ -2059,15 +2171,17 @@ export default function ColorTransfer() {
 													onChange={(e) => handleShadowChange(i, parseInt(e.target.value))}
 													className="flex-1 h-1.5 bg-white/10 rounded-full appearance-none cursor-pointer accent-indigo-500 hover:accent-indigo-400 transition-all"
 												/>
-												<span className="w-10 text-right font-mono text-indigo-400 text-sm font-bold">{res.shadow}</span>
+												<span className="w-8 text-right font-mono text-indigo-400 text-sm font-bold">{res.shadow}</span>
 											</div>
 										</div>
 									</div>
 								</div>
 							</div>
 						))}
+							</div>
+							<div className="h-4" />
+						</div>
 					</div>
-					<div className="h-40" />
 				</div>
 			)}
 
