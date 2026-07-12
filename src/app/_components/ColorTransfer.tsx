@@ -84,8 +84,9 @@ const TRANSLATIONS = {
 		menu_karukusuru_desc: "画質そのまま、ファイルだけ軽くするツール。",
 		menu_open: "開く",
 		menu_about: "iroAwase について",
-		menu_privacy: "・画像はサーバーに保存されません",
+		menu_privacy: "・写真はあなたのスマホ・PCの中だけで処理されます",
 		menu_client_side: "・すべての処理はブラウザ上で完結します",
+		privacyNotice: "🔒 写真はあなたのスマホ・PCの中だけで処理されます",
 		modal_reset_title: "全てリセットしますか？",
 		modal_reset_desc: "アップロードした画像と設定がすべて消去されます。この操作は取り消せません。",
 		modal_cancel: "キャンセル",
@@ -132,8 +133,9 @@ const TRANSLATIONS = {
 		menu_karukusuru_desc: "Reduce file size while keeping quality high.",
 		menu_open: "Open",
 		menu_about: "About iroAwase",
-		menu_privacy: "• Images are not saved on the server",
+		menu_privacy: "• Photos are processed only inside your phone or PC",
 		menu_client_side: "• All processing is done on your browser",
+		privacyNotice: "🔒 Photos are processed only inside your phone or PC",
 		modal_reset_title: "Reset Everything?",
 		modal_reset_desc: "This will clear all uploaded images and settings. This action cannot be undone.",
 		modal_cancel: "Cancel",
@@ -1539,7 +1541,7 @@ export default function ColorTransfer() {
 
 			{/* Menu Panel */}
 			<div
-				className={`fixed inset-y-0 left-0 w-72 bg-[#0a0a0e]/95 backdrop-blur-xl z-[70] transform transition-transform duration-300 ease-in-out border-r border-white/10 shadow-2xl flex flex-col ${isMenuOpen ? "translate-x-0" : "-translate-x-full"}`}
+				className={`fixed inset-y-0 left-0 w-86 bg-[#0a0a0e]/95 backdrop-blur-xl z-[70] transform transition-transform duration-300 ease-in-out border-r border-white/10 shadow-2xl flex flex-col ${isMenuOpen ? "translate-x-0" : "-translate-x-full"}`}
 			>
 				{/* Close Button */}
 				<div className="p-4 flex justify-end">
@@ -1610,7 +1612,7 @@ export default function ColorTransfer() {
 							<div className="space-y-2.5">
 								<p className="text-xs text-gray-400 font-medium tracking-tight">{(t as any).menu_privacy}</p>
 								<p className="text-xs text-gray-400 font-medium tracking-tight">{(t as any).menu_client_side}</p>
-								<p className="pt-4 text-[10px] text-gray-600 font-mono tracking-tight uppercase">© 2025 CodeAtelier Yu</p>
+								<p className="pt-4 text-[10px] text-gray-600 font-mono tracking-tight uppercase">© 2026 CodeAtelier Yu</p>
 							</div>
 
 							<a
@@ -1662,6 +1664,7 @@ export default function ColorTransfer() {
 					</h1>
 				</div>
 				<p className="text-gray-400 text-sm md:text-base">{t.subtitle}</p>
+				<p className="text-gray-500 text-xs md:text-sm mt-1">{(t as any).privacyNotice}</p>
 			</div>
 
 			{/* Main Drop Zones */}
