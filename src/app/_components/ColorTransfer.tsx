@@ -58,6 +58,10 @@ const TRANSLATIONS = {
 		btnDownloadZip: "まとめてダウンロード (.zip) 📦",
 		btnReset: "リセットして最初に戻る ↺",
 		resultsTitle: "変換結果",
+		galleryTitle: "一覧プレビュー",
+		sliderIntensity: "補正の強さ",
+		sliderSaturation: "彩度",
+		sliderShadow: "シャドウ",
 		labelOriginal: "元画像",
 		labelStandard: "標準",
 		labelIntense: "強め",
@@ -102,6 +106,10 @@ const TRANSLATIONS = {
 		btnDownloadZip: "Download All as ZIP (.zip) 📦",
 		btnReset: "Reset All ↺",
 		resultsTitle: "Processing Results",
+		galleryTitle: "Gallery Preview",
+		sliderIntensity: "Adjustment Intensity",
+		sliderSaturation: "Saturation",
+		sliderShadow: "Shadow",
 		labelOriginal: "Original",
 		labelStandard: "Standard",
 		labelIntense: "Intense",
@@ -135,6 +143,14 @@ const TRANSLATIONS = {
 
 
 // --- Helper Functions ---
+
+const mapDisplayToInternal = (x: number): number => {
+	if (x <= 50) {
+		return x * 0.7; // 0->0, 50->35
+	} else {
+		return 35 + (x - 50) * 1.3; // 50->35, 100->100
+	}
+};
 
 const loadImage = (src: string): Promise<HTMLImageElement> => {
 	return new Promise((resolve, reject) => {
@@ -271,22 +287,8 @@ interface DebugInfo {
 	distanceFactor: number;
 	scaleA_std?: number;
 	scaleB_std?: number;
-	bandRatios?: {
-		lShadow: number, lMid: number, lHighlight: number,
-		cShadow: number, cMid: number, cHighlight: number
-	};
-	bandConfidences?: {
-		lShadow: number, lMid: number, lHighlight: number,
-		cShadow: number, cMid: number, cHighlight: number
-	};
-	bandCoeffs?: {
-		lShadow: { A: number, B: number },
-		lMid: { A: number, B: number },
-		lHighlight: { A: number, B: number },
-		cShadow: number,
-		cMid: number,
-		cHighlight: number
-	};
+	toneCurveL?: { x: number[]; y: number[]; slopes: number[]; cap: number };
+	toneCurveC?: { x: number[]; y: number[]; slopes: number[]; cap: number };
 }
 
 interface ResultState {
@@ -387,32 +389,47 @@ const computeStats = (ctx: CanvasRenderingContext2D, width: number, height: numb
 };
 
 // --- v2 Algorithm Types & Constants ---
-const OUTLIER_PERCENT = 0.02; // 上下2%を除外
-const OVERLAP_PERCENT = 0.15; // 境界の前後15%をオーバーラップ
-const MIN_BAND_PIXEL_RATIO = 0.05; // 信頼度を下げるピクセル数の割合の閾値 (5%)
+// v2: パーセンタイル・アンカー方式の単調トーンカーブ
+// L(明度)とC(彩度)それぞれについて、target/referenceのパーセンタイル対応点を
+// アンカーとした写像を作り、傾き制限つきの単調カーブとしてLUTに焼き込む。
+// 帯域分割と違い、写像の連続性・単調性・傾き上限が構成方法として保証される。
+
+const ANCHOR_PERCENTILES = [0.02, 0.10, 0.25, 0.50, 0.75, 0.90, 0.98];
+
+// 傾き制限: 上限はノイズ増幅の上限、下限は階調潰れの下限。
+// 上限はIntensityスライダーに連動: 通常域(〜60)ではタイトに保ちノイズを抑え、
+// 極端な位置(60〜100)でのみ緩めて強い転写を許容する。
+const L_SLOPE_MIN = 0.35;
+const L_SLOPE_MAX_NORMAL = 1.8;
+const L_SLOPE_MAX_EXTREME = 3.0;
+const C_SLOPE_MIN = 0.8; // 彩度縮小の下限。彩度が縮みすぎる画像で計算結果を自然に持ち上げる(旧SCALE_FLOOR相当、0.7→0.8に緩和)
+const C_SLOPE_MAX_NORMAL = 1.6;
+const C_SLOPE_MAX_EXTREME = 3.0;
+const SLOPE_RELAX_START = 60; // このIntensityから上限を緩め始める
+
+// Intensityに応じた傾き上限を返す
+function slopeMaxForIntensity(intensity: number, normalMax: number, extremeMax: number): number {
+	const t = Math.min(1, Math.max(0, (intensity - SLOPE_RELAX_START) / (100 - SLOPE_RELAX_START)));
+	return normalMax + (extremeMax - normalMax) * t;
+}
+
+const TONE_LUT_SIZE = 512;
+const L_DOMAIN_MAX = 1.0; // OklabのLは0〜1
+const C_DOMAIN_MAX = 0.5; // OklabのCは実用上0.4未満
+const ANCHOR_MIN_DX = 1e-4; // これより近いアンカーは統合(縮退防止)
 
 interface BandStat {
 	mean: number;
 	std: number;
-	ratio?: number; // 全体に対するピクセル数の割合
-	confidence?: number; // 信頼度 (0.0〜1.0)
-}
-
-interface BandStats {
-	shadow: BandStat; // Lはシャドウ、Cは低彩度
-	mid: BandStat;
-	highlight: BandStat; // Lはハイライト、Cは高彩度
 }
 
 interface ColorStatsV2 {
-	lBands: BandStats;
-	cBands: BandStats;
+	lAnchors: number[]; // ANCHOR_PERCENTILES位置のLの値
+	cAnchors: number[]; // ANCHOR_PERCENTILES位置のCの値
 	globalL: BandStat;
 	globalC: BandStat;
 	globalA: BandStat;
 	globalB: BandStat;
-	lBoundaries: { t33: number; t66: number; min: number; max: number };
-	cBoundaries: { t33: number; t66: number; min: number; max: number };
 	percentiles?: {
 		lMax95: number;
 		cMax95: number;
@@ -420,190 +437,181 @@ interface ColorStatsV2 {
 	};
 }
 
-// 境界から重みを計算する関数（台形型）
-// 戻り値: [shadowWeight, midWeight, highlightWeight]
-function calculateBandWeights(value: number, t33: number, t66: number, min: number, max: number, overlapPercent: number): [number, number, number] {
-	const range = max - min;
-	if (range <= 0.001) return [0, 1, 0]; // 範囲が狭すぎる場合はすべてmidとする
-	
-	const overlap = range * overlapPercent;
-	
-	let wS = 0, wM = 0, wH = 0;
-	
-	if (value <= t33 - overlap) {
-		wS = 1;
-	} else if (value < t33 + overlap) {
-		wM = (value - (t33 - overlap)) / (2 * overlap);
-		wS = 1 - wM;
-	} else if (value <= t66 - overlap) {
-		wM = 1;
-	} else if (value < t66 + overlap) {
-		wH = (value - (t66 - overlap)) / (2 * overlap);
-		wM = 1 - wH;
-	} else {
-		wH = 1;
+interface ToneCurve {
+	lut: Float32Array;
+	domainMax: number;
+	// デバッグ用: 傾き制限適用後のアンカーと区間傾き
+	anchorsX: number[];
+	anchorsY: number[];
+	slopes: number[];
+}
+
+// target→referenceのパーセンタイル対応から、単調・傾き制限つきトーンカーブを構築する。
+// strength: 0で恒等写像、1で完全マッチ。
+function buildToneCurve(
+	tgtAnchors: number[],
+	refAnchors: number[],
+	strength: number,
+	slopeMin: number,
+	slopeMax: number,
+	domainMax: number
+): ToneCurve {
+	// 1. アンカーを強度でブレンド + 近すぎるxを統合
+	const xs: number[] = [];
+	const ys: number[] = [];
+	for (let i = 0; i < tgtAnchors.length; i++) {
+		const x = tgtAnchors[i];
+		const y = x + (refAnchors[i] - x) * strength;
+		if (xs.length > 0 && x - xs[xs.length - 1] < ANCHOR_MIN_DX) {
+			ys[ys.length - 1] = (ys[ys.length - 1] + y) / 2;
+		} else {
+			xs.push(x);
+			ys.push(y);
+		}
 	}
-	
-	return [wS, wM, wH];
+
+	// 2. yの単調化(パーセンタイル由来なら理論上単調だが数値誤差対策)
+	for (let i = 1; i < ys.length; i++) {
+		if (ys[i] < ys[i - 1]) ys[i] = ys[i - 1];
+	}
+
+	// 3. 中央アンカー(≒中央値の対応)を固定し、外側へ向かって傾きをクランプ。
+	//    これで写像全体の傾きが[slopeMin, slopeMax]に収まることが保証される。
+	const clampSlope = (s: number) => Math.min(slopeMax, Math.max(slopeMin, s));
+	const mid = Math.floor(xs.length / 2);
+	for (let i = mid; i < xs.length - 1; i++) {
+		const dx = xs[i + 1] - xs[i];
+		ys[i + 1] = ys[i] + clampSlope((ys[i + 1] - ys[i]) / dx) * dx;
+	}
+	for (let i = mid; i > 0; i--) {
+		const dx = xs[i] - xs[i - 1];
+		ys[i - 1] = ys[i] - clampSlope((ys[i] - ys[i - 1]) / dx) * dx;
+	}
+
+	const slopes: number[] = [];
+	for (let i = 0; i < xs.length - 1; i++) {
+		slopes.push((ys[i + 1] - ys[i]) / (xs[i + 1] - xs[i]));
+	}
+
+	// 4. 区分線形でLUTに焼き込む。端の外側は端区間の傾きで外挿。
+	const lut = new Float32Array(TONE_LUT_SIZE);
+	const n = xs.length;
+	const sFirst = n >= 2 ? slopes[0] : 1.0;
+	const sLast = n >= 2 ? slopes[n - 2] : 1.0;
+	let seg = 0;
+	for (let i = 0; i < TONE_LUT_SIZE; i++) {
+		const v = (i / (TONE_LUT_SIZE - 1)) * domainMax;
+		let y: number;
+		if (n < 2) {
+			y = n === 1 ? ys[0] + (v - xs[0]) : v;
+		} else if (v <= xs[0]) {
+			y = ys[0] + (v - xs[0]) * sFirst;
+		} else if (v >= xs[n - 1]) {
+			y = ys[n - 1] + (v - xs[n - 1]) * sLast;
+		} else {
+			while (seg < n - 2 && v > xs[seg + 1]) seg++;
+			const t = (v - xs[seg]) / (xs[seg + 1] - xs[seg]);
+			y = ys[seg] + (ys[seg + 1] - ys[seg]) * t;
+		}
+		lut[i] = Math.max(0, y);
+	}
+
+	// 5. 軽い移動平均でアンカーの折れ目を丸める(単調性は保たれる)
+	const RADIUS = 3;
+	for (let pass = 0; pass < 2; pass++) {
+		const src = Float32Array.from(lut);
+		for (let i = 0; i < TONE_LUT_SIZE; i++) {
+			let sum = 0;
+			for (let j = -RADIUS; j <= RADIUS; j++) {
+				sum += src[Math.min(TONE_LUT_SIZE - 1, Math.max(0, i + j))];
+			}
+			lut[i] = sum / (2 * RADIUS + 1);
+		}
+	}
+
+	return { lut, domainMax, anchorsX: xs, anchorsY: ys, slopes };
+}
+
+function sampleToneCurve(curve: ToneCurve, v: number): number {
+	const t = (v / curve.domainMax) * (TONE_LUT_SIZE - 1);
+	if (t <= 0) return curve.lut[0];
+	if (t >= TONE_LUT_SIZE - 1) return curve.lut[TONE_LUT_SIZE - 1];
+	const i = Math.floor(t);
+	const f = t - i;
+	return curve.lut[i] * (1 - f) + curve.lut[i + 1] * f;
 }
 
 const computeStatsV2 = (ctx: CanvasRenderingContext2D, width: number, height: number): ColorStatsV2 => {
 	const imgData = ctx.getImageData(0, 0, width, height);
 	const data = imgData.data;
-	const pixels: { l: number, a: number, b: number, c: number }[] = [];
+	const n = data.length / 4;
 
-	for (let i = 0; i < data.length; i += 4) {
-		const r = data[i];
-		const g = data[i + 1];
-		const b = data[i + 2];
-		const [l, a, bb] = rgb2lab(r, g, b);
-		const c = Math.sqrt(a * a + bb * bb);
-		pixels.push({ l, a, b: bb, c });
+	if (n === 0) {
+		const defaultBand = { mean: 0, std: 1 };
+		return {
+			lAnchors: ANCHOR_PERCENTILES.map(p => p),
+			cAnchors: ANCHOR_PERCENTILES.map(() => 0),
+			globalL: { ...defaultBand }, globalC: { ...defaultBand },
+			globalA: { ...defaultBand }, globalB: { ...defaultBand },
+			percentiles: { lMax95: 1, cMax95: 1, lMin5: 0 }
+		};
 	}
 
-	const n = pixels.length;
-	// デフォルト値
-	const defaultBand = { mean: 0, std: 1 };
-	const defaultBands = { shadow: { ...defaultBand }, mid: { ...defaultBand }, highlight: { ...defaultBand } };
-	if (n === 0) return {
-		lBands: defaultBands, cBands: defaultBands,
-		globalL: defaultBand, globalC: defaultBand,
-		globalA: defaultBand, globalB: defaultBand,
-		lBoundaries: { t33: 0, t66: 1, min: 0, max: 1 },
-		cBoundaries: { t33: 0, t66: 1, min: 0, max: 1 },
-		percentiles: { lMax95: 1, cMax95: 1, lMin5: 0 }
-	};
+	const lArr = new Float32Array(n);
+	const aArr = new Float32Array(n);
+	const bArr = new Float32Array(n);
+	const cArr = new Float32Array(n);
 
-	// L, Cをソートして外れ値を除外 (上位・下位 OUTLIER_PERCENT)
-	const lSorted = [...pixels].map(p => p.l).sort((x, y) => x - y);
-	const cSorted = [...pixels].map(p => p.c).sort((x, y) => x - y);
-
-	const idxLower = Math.floor(n * OUTLIER_PERCENT);
-	const idxUpper = Math.floor(n * (1.0 - OUTLIER_PERCENT));
-
-	// 95%クランプ用 (既存の互換性)
-	const idxL5 = Math.floor(n * 0.05);
-	const idxL95 = Math.floor(n * 0.95);
-	const idxC95 = Math.floor(n * 0.985); // 従来通り
-	const lMin5 = lSorted[idxL5];
-	const lMax95 = lSorted[idxL95];
-	const cMax95 = cSorted[idxC95];
-
-	// 分析用境界
-	const lMin = lSorted[idxLower];
-	const lMax = lSorted[idxUpper];
-	const cMin = cSorted[idxLower];
-	const cMax = cSorted[idxUpper];
-
-	// 外れ値を除外したピクセルのみで33%・66%を計算
-	const lFiltered = lSorted.slice(idxLower, idxUpper + 1);
-	const cFiltered = cSorted.slice(idxLower, idxUpper + 1);
-	
-	const l_t33 = lFiltered[Math.floor(lFiltered.length * 0.33)];
-	const l_t66 = lFiltered[Math.floor(lFiltered.length * 0.66)];
-	const c_t33 = cFiltered[Math.floor(cFiltered.length * 0.33)];
-	const c_t66 = cFiltered[Math.floor(cFiltered.length * 0.66)];
-
-	// グローバルのL, C, a, bを計算
-	const globalPixels = pixels.filter(p => p.l >= lMin5 && p.l <= lMax95 && p.c <= cMax95);
-	const gn = globalPixels.length || 1;
-	const globalMeanL = globalPixels.reduce((acc, p) => acc + p.l, 0) / gn;
-	const globalMeanC = globalPixels.reduce((acc, p) => acc + p.c, 0) / gn;
-	const globalMeanA = globalPixels.reduce((acc, p) => acc + p.a, 0) / gn;
-	const globalMeanB = globalPixels.reduce((acc, p) => acc + p.b, 0) / gn;
-	const globalStdL = Math.sqrt(globalPixels.reduce((acc, p) => acc + Math.pow(p.l - globalMeanL, 2), 0) / gn);
-	const globalStdC = Math.sqrt(globalPixels.reduce((acc, p) => acc + Math.pow(p.c - globalMeanC, 2), 0) / gn);
-	const globalStdA = Math.sqrt(globalPixels.reduce((acc, p) => acc + Math.pow(p.a - globalMeanA, 2), 0) / gn);
-	const globalStdB = Math.sqrt(globalPixels.reduce((acc, p) => acc + Math.pow(p.b - globalMeanB, 2), 0) / gn);
-
-	// 帯域ごとの重み付き統計を計算
-	let sumWL_S = 0, sumL_S = 0, sumWL_M = 0, sumL_M = 0, sumWL_H = 0, sumL_H = 0;
-	let sumWC_S = 0, sumC_S = 0, sumWC_M = 0, sumC_M = 0, sumWC_H = 0, sumC_H = 0;
-
-	for (const p of pixels) {
-		const [wlS, wlM, wlH] = calculateBandWeights(p.l, l_t33, l_t66, lMin, lMax, OVERLAP_PERCENT);
-		sumWL_S += wlS; sumL_S += p.l * wlS;
-		sumWL_M += wlM; sumL_M += p.l * wlM;
-		sumWL_H += wlH; sumL_H += p.l * wlH;
-
-		const [wcS, wcM, wcH] = calculateBandWeights(p.c, c_t33, c_t66, cMin, cMax, OVERLAP_PERCENT);
-		sumWC_S += wcS; sumC_S += p.c * wcS;
-		sumWC_M += wcM; sumC_M += p.c * wcM;
-		sumWC_H += wcH; sumC_H += p.c * wcH;
+	for (let i = 0, p = 0; i < data.length; i += 4, p++) {
+		const [l, a, bb] = rgb2lab(data[i], data[i + 1], data[i + 2]);
+		lArr[p] = l;
+		aArr[p] = a;
+		bArr[p] = bb;
+		cArr[p] = Math.sqrt(a * a + bb * bb);
 	}
 
-	const meanLS = sumWL_S > 0 ? sumL_S / sumWL_S : 0;
-	const meanLM = sumWL_M > 0 ? sumL_M / sumWL_M : 0;
-	const meanLH = sumWL_H > 0 ? sumL_H / sumWL_H : 0;
-	const meanCS = sumWC_S > 0 ? sumC_S / sumWC_S : 0;
-	const meanCM = sumWC_M > 0 ? sumC_M / sumWC_M : 0;
-	const meanCH = sumWC_H > 0 ? sumC_H / sumWC_H : 0;
+	// TypedArrayのsortは数値順
+	const lSorted = Float32Array.from(lArr).sort();
+	const cSorted = Float32Array.from(cArr).sort();
+	const pct = (sorted: Float32Array, p: number) => sorted[Math.min(n - 1, Math.floor(n * p))];
 
-	// Std計算
-	let varL_S = 0, varL_M = 0, varL_H = 0;
-	let varC_S = 0, varC_M = 0, varC_H = 0;
+	// トーンカーブ用アンカー
+	const lAnchors = ANCHOR_PERCENTILES.map(p => pct(lSorted, p));
+	const cAnchors = ANCHOR_PERCENTILES.map(p => pct(cSorted, p));
 
-	for (const p of pixels) {
-		const [wlS, wlM, wlH] = calculateBandWeights(p.l, l_t33, l_t66, lMin, lMax, OVERLAP_PERCENT);
-		varL_S += wlS * Math.pow(p.l - meanLS, 2);
-		varL_M += wlM * Math.pow(p.l - meanLM, 2);
-		varL_H += wlH * Math.pow(p.l - meanLH, 2);
+	// クランプ用パーセンタイル (既存の互換性)
+	const lMin5 = pct(lSorted, 0.05);
+	const lMax95 = pct(lSorted, 0.95);
+	const cMax95 = pct(cSorted, 0.985);
 
-		const [wcS, wcM, wcH] = calculateBandWeights(p.c, c_t33, c_t66, cMin, cMax, OVERLAP_PERCENT);
-		varC_S += wcS * Math.pow(p.c - meanCS, 2);
-		varC_M += wcM * Math.pow(p.c - meanCM, 2);
-		varC_H += wcH * Math.pow(p.c - meanCH, 2);
+	// グローバルのL, C, a, b (外れ値除外つき、従来と同じフィルタ)
+	let gn = 0, sumL = 0, sumC = 0, sumA = 0, sumB = 0;
+	for (let p = 0; p < n; p++) {
+		if (lArr[p] >= lMin5 && lArr[p] <= lMax95 && cArr[p] <= cMax95) {
+			gn++;
+			sumL += lArr[p]; sumC += cArr[p]; sumA += aArr[p]; sumB += bArr[p];
+		}
 	}
+	const g = gn || 1;
+	const globalMeanL = sumL / g, globalMeanC = sumC / g, globalMeanA = sumA / g, globalMeanB = sumB / g;
 
-	const stdLS = Math.sqrt(sumWL_S > 0 ? varL_S / sumWL_S : 0);
-	const stdLM = Math.sqrt(sumWL_M > 0 ? varL_M / sumWL_M : 0);
-	const stdLH = Math.sqrt(sumWL_H > 0 ? varL_H / sumWL_H : 0);
-	const stdCS = Math.sqrt(sumWC_S > 0 ? varC_S / sumWC_S : 0);
-	const stdCM = Math.sqrt(sumWC_M > 0 ? varC_M / sumWC_M : 0);
-	const stdCH = Math.sqrt(sumWC_H > 0 ? varC_H / sumWC_H : 0);
-
-	const ratioLS = sumWL_S / n;
-	const ratioLM = sumWL_M / n;
-	const ratioLH = sumWL_H / n;
-	const ratioCS = sumWC_S / n;
-	const ratioCM = sumWC_M / n;
-	const ratioCH = sumWC_H / n;
-
-	const confLS = Math.min(1.0, ratioLS / MIN_BAND_PIXEL_RATIO);
-	const confLM = Math.min(1.0, ratioLM / MIN_BAND_PIXEL_RATIO);
-	const confLH = Math.min(1.0, ratioLH / MIN_BAND_PIXEL_RATIO);
-	const confCS = Math.min(1.0, ratioCS / MIN_BAND_PIXEL_RATIO);
-	const confCM = Math.min(1.0, ratioCM / MIN_BAND_PIXEL_RATIO);
-	const confCH = Math.min(1.0, ratioCH / MIN_BAND_PIXEL_RATIO);
-
-	// S, H帯域の統計をM帯域に寄せる（M帯域自体はそのまま）
-	const adjMeanLS = meanLS * confLS + meanLM * (1 - confLS);
-	const adjStdLS = stdLS * confLS + stdLM * (1 - confLS);
-	const adjMeanLH = meanLH * confLH + meanLM * (1 - confLH);
-	const adjStdLH = stdLH * confLH + stdLM * (1 - confLH);
-
-	const adjMeanCS = meanCS * confCS + meanCM * (1 - confCS);
-	const adjStdCS = stdCS * confCS + stdCM * (1 - confCS);
-	const adjMeanCH = meanCH * confCH + meanCM * (1 - confCH);
-	const adjStdCH = stdCH * confCH + stdCM * (1 - confCH);
+	let varL = 0, varC = 0, varA = 0, varB = 0;
+	for (let p = 0; p < n; p++) {
+		if (lArr[p] >= lMin5 && lArr[p] <= lMax95 && cArr[p] <= cMax95) {
+			varL += (lArr[p] - globalMeanL) ** 2;
+			varC += (cArr[p] - globalMeanC) ** 2;
+			varA += (aArr[p] - globalMeanA) ** 2;
+			varB += (bArr[p] - globalMeanB) ** 2;
+		}
+	}
 
 	return {
-		lBands: {
-			shadow: { mean: adjMeanLS, std: adjStdLS, ratio: ratioLS, confidence: confLS },
-			mid: { mean: meanLM, std: stdLM, ratio: ratioLM, confidence: confLM },
-			highlight: { mean: adjMeanLH, std: adjStdLH, ratio: ratioLH, confidence: confLH }
-		},
-		cBands: {
-			shadow: { mean: adjMeanCS, std: adjStdCS, ratio: ratioCS, confidence: confCS },
-			mid: { mean: meanCM, std: stdCM, ratio: ratioCM, confidence: confCM },
-			highlight: { mean: adjMeanCH, std: adjStdCH, ratio: ratioCH, confidence: confCH }
-		},
-		globalL: { mean: globalMeanL, std: globalStdL },
-		globalC: { mean: globalMeanC, std: globalStdC },
-		globalA: { mean: globalMeanA, std: globalStdA },
-		globalB: { mean: globalMeanB, std: globalStdB },
-		lBoundaries: { t33: l_t33, t66: l_t66, min: lMin, max: lMax },
-		cBoundaries: { t33: c_t33, t66: c_t66, min: cMin, max: cMax },
+		lAnchors,
+		cAnchors,
+		globalL: { mean: globalMeanL, std: Math.sqrt(varL / g) },
+		globalC: { mean: globalMeanC, std: Math.sqrt(varC / g) },
+		globalA: { mean: globalMeanA, std: Math.sqrt(varA / g) },
+		globalB: { mean: globalMeanB, std: Math.sqrt(varB / g) },
 		percentiles: { lMax95, cMax95, lMin5 }
 	};
 };
@@ -629,6 +637,61 @@ export default function ColorTransfer() {
 
 	// Auto-scroll ref
 	const resultsRef = useRef<HTMLDivElement>(null);
+
+	// ギャラリーから個別カードへのスクロール用
+	const cardRefs = useRef<{ [id: number]: HTMLDivElement | null }>({});
+	const scrollToResultCard = (id: number) => {
+		cardRefs.current[id]?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+	};
+
+	const [activeCardId, setActiveCardId] = useState<number | null>(null);
+	const [isMobileGalleryOpen, setIsMobileGalleryOpen] = useState(false);
+	const sidebarListRef = useRef<HTMLDivElement>(null);
+	const mobileListRef = useRef<HTMLDivElement>(null);
+
+	// Setup IntersectionObserver for auto-scroll tracking
+	useEffect(() => {
+		if (results.length === 0) return;
+
+		const observer = new IntersectionObserver((entries) => {
+			entries.forEach(entry => {
+				if (entry.isIntersecting) {
+					const idStr = (entry.target as HTMLElement).dataset.cardId;
+					if (idStr) {
+						const id = Number(idStr);
+						if (!isNaN(id)) {
+							setActiveCardId(id);
+						}
+					}
+				}
+			});
+		}, {
+			root: null,
+			rootMargin: '-30% 0px -60% 0px',
+			threshold: 0
+		});
+
+		Object.values(cardRefs.current).forEach(el => {
+			if (el) observer.observe(el);
+		});
+
+		return () => observer.disconnect();
+	}, [results.length]);
+
+	// Auto scroll sidebar / mobile gallery when active card changes
+	useEffect(() => {
+		if (activeCardId === null) return;
+		
+		const sideBtn = sidebarListRef.current?.querySelector(`[data-thumb-id="${activeCardId}"]`);
+		if (sideBtn) {
+			sideBtn.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+		}
+
+		const mobBtn = mobileListRef.current?.querySelector(`[data-thumb-id="${activeCardId}"]`);
+		if (mobBtn) {
+			mobBtn.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' });
+		}
+	}, [activeCardId]);
 
 	const imageCache = useRef<{
 		[id: number]: {
@@ -862,36 +925,19 @@ export default function ColorTransfer() {
 		const k = (intensity / 114.0) * distanceFactor;
 
 		const SCALE_CAP = 3.0;
-		const SCALE_FLOOR = 0.7;
+		const SCALE_FLOOR = 0.8; // a/b色相オフセットの縮小下限(彩度が縮みすぎる画像を持ち上げる、0.7→0.8に緩和)
 		const REF_STD_CAP = 0.18;
 		const BLEND_STD = 0.95;
-		const BLEND_MEAN_L = 0.8;
 		const BLEND_MEAN_C = 0.8;
 
-		function calcLCoeff(tgtL: BandStat, refL: BandStat) {
-			const effRefStd = Math.min(refL.std, REF_STD_CAP);
-			const rawScale = (tgtL.std > 0.01) ? Math.min(SCALE_CAP, effRefStd / tgtL.std) : 1;
-			const scale_std = 1.0 + (rawScale - 1.0) * BLEND_STD;
-			const A = 1 + (scale_std - 1) * k;
-			const B = (refL.mean - tgtL.mean * scale_std) * k * BLEND_MEAN_L;
-			return { A, B };
-		}
-		const coeffLS = calcLCoeff(tgtStats.lBands.shadow, refStats.lBands.shadow);
-		const coeffLM = calcLCoeff(tgtStats.lBands.mid, refStats.lBands.mid);
-		const coeffLH = calcLCoeff(tgtStats.lBands.highlight, refStats.lBands.highlight);
+		// L(明度)・C(彩度)の単調トーンカーブをLUTに焼き込む
+		// 傾き上限はIntensityに連動(通常域はタイト、極端な位置のみ緩和)
+		const lSlopeMax = slopeMaxForIntensity(intensity, L_SLOPE_MAX_NORMAL, L_SLOPE_MAX_EXTREME);
+		const cSlopeMax = slopeMaxForIntensity(intensity, C_SLOPE_MAX_NORMAL, C_SLOPE_MAX_EXTREME);
+		const lCurve = buildToneCurve(tgtStats.lAnchors, refStats.lAnchors, k, L_SLOPE_MIN, lSlopeMax, L_DOMAIN_MAX);
+		const cCurve = buildToneCurve(tgtStats.cAnchors, refStats.cAnchors, k, C_SLOPE_MIN, cSlopeMax, C_DOMAIN_MAX);
 
-		function calcCCoeff(tgtC: BandStat, refC: BandStat) {
-			const effRefStd = Math.min(refC.std, REF_STD_CAP);
-			const rawScale = (tgtC.std > 0.01) ? Math.min(SCALE_CAP, effRefStd / tgtC.std) : 1;
-			let scale_std = 1.0 + (rawScale - 1.0) * BLEND_STD;
-			scale_std = Math.max(scale_std, SCALE_FLOOR);
-			const A_C = 1 + (scale_std - 1) * k;
-			return A_C;
-		}
-		const coeffCS = calcCCoeff(tgtStats.cBands.shadow, refStats.cBands.shadow);
-		const coeffCM = calcCCoeff(tgtStats.cBands.mid, refStats.cBands.mid);
-		const coeffCH = calcCCoeff(tgtStats.cBands.highlight, refStats.cBands.highlight);
-
+		// a/bの色相オフセットはグローバル統計から(従来通り)
 		const globalRawScaleA = (tgtStats.globalA.std > 0.01) ? Math.min(SCALE_CAP, Math.min(refStats.globalA.std, REF_STD_CAP) / tgtStats.globalA.std) : 1;
 		const globalScaleA = Math.max(SCALE_FLOOR, 1.0 + (globalRawScaleA - 1.0) * BLEND_STD);
 		const B_a_global = (refStats.globalA.mean - tgtStats.globalA.mean * globalScaleA) * k * BLEND_MEAN_C;
@@ -909,17 +955,13 @@ export default function ColorTransfer() {
 			const [l, a, b] = rgb2lab(outData[i], outData[i + 1], outData[i + 2]);
 			const c = Math.sqrt(a * a + b * b);
 
-			const [wlS, wlM, wlH] = calculateBandWeights(l, tgtStats.lBoundaries.t33, tgtStats.lBoundaries.t66, tgtStats.lBoundaries.min, tgtStats.lBoundaries.max, OVERLAP_PERCENT);
-			const l_new_S = l * coeffLS.A + coeffLS.B;
-			const l_new_M = l * coeffLM.A + coeffLM.B;
-			const l_new_H = l * coeffLH.A + coeffLH.B;
-			let l_new = l_new_S * wlS + l_new_M * wlM + l_new_H * wlH;
+			let l_new = sampleToneCurve(lCurve, l);
 
-			const [wcS, wcM, wcH] = calculateBandWeights(c, tgtStats.cBoundaries.t33, tgtStats.cBoundaries.t66, tgtStats.cBoundaries.min, tgtStats.cBoundaries.max, OVERLAP_PERCENT);
-			const scaleC_blended = coeffCS * wcS + coeffCM * wcM + coeffCH * wcH;
+			// 彩度はカーブが返す目標Cへの倍率としてa/bに適用(色相を保つ)
+			const cRatio = c > 1e-6 ? sampleToneCurve(cCurve, c) / c : 1.0;
 
-			let a_new_raw = a * scaleC_blended + B_a_global;
-			let b_new_raw = b * scaleC_blended + B_b_global;
+			let a_new_raw = a * cRatio + B_a_global;
+			let b_new_raw = b * cRatio + B_b_global;
 
 			// クランプと保護処理 (v1と同等)
 			if (refStats.percentiles) {
@@ -938,7 +980,9 @@ export default function ColorTransfer() {
 				}
 			}
 
-			l_new = (l_new - 0.5) * 1.1 + 0.5;
+			// 既定のコントラスト強調。0.5を軸に暗部を沈める副作用があるため、
+			// シャドウが強すぎる傾向を緩めるべく 1.1→1.05 に弱めた(既定シャドウの引き締め緩和)
+			l_new = (l_new - 0.5) * 1.05 + 0.5;
 			l_new = applyShadowCrush(l_new, shadowStrength);
 
 			let weight = 1.0;
@@ -986,30 +1030,8 @@ export default function ColorTransfer() {
 				distanceFactor: distanceFactor,
 				scaleA_std: globalScaleA,
 				scaleB_std: globalScaleB,
-				bandRatios: {
-					lShadow: tgtStats.lBands.shadow.ratio || 0,
-					lMid: tgtStats.lBands.mid.ratio || 0,
-					lHighlight: tgtStats.lBands.highlight.ratio || 0,
-					cShadow: tgtStats.cBands.shadow.ratio || 0,
-					cMid: tgtStats.cBands.mid.ratio || 0,
-					cHighlight: tgtStats.cBands.highlight.ratio || 0
-				},
-				bandConfidences: {
-					lShadow: tgtStats.lBands.shadow.confidence || 0,
-					lMid: tgtStats.lBands.mid.confidence || 0,
-					lHighlight: tgtStats.lBands.highlight.confidence || 0,
-					cShadow: tgtStats.cBands.shadow.confidence || 0,
-					cMid: tgtStats.cBands.mid.confidence || 0,
-					cHighlight: tgtStats.cBands.highlight.confidence || 0
-				},
-				bandCoeffs: {
-					lShadow: { A: coeffLS.A, B: coeffLS.B },
-					lMid: { A: coeffLM.A, B: coeffLM.B },
-					lHighlight: { A: coeffLH.A, B: coeffLH.B },
-					cShadow: coeffCS,
-					cMid: coeffCM,
-					cHighlight: coeffCH
-				}
+				toneCurveL: { x: lCurve.anchorsX, y: lCurve.anchorsY, slopes: lCurve.slopes, cap: lSlopeMax },
+				toneCurveC: { x: cCurve.anchorsX, y: cCurve.anchorsY, slopes: cCurve.slopes, cap: cSlopeMax }
 			};
 		}
 
@@ -1232,14 +1254,17 @@ export default function ColorTransfer() {
 					algorithmVersion: algorithmVersion
 				};
 
-				// 3. Process initial result (Intensity 35)
+				// 3. Process initial result (Intensity 35 - 内部値)
+				const initialDisplayIntensity = 50;
+				const initialInternalIntensity = mapDisplayToInternal(initialDisplayIntensity); // = 35
+
 				const debugOut: { debugInfo?: DebugInfo } = {};
 				const imgData = previewResized.ctx.getImageData(0, 0, previewResized.width, previewResized.height);
 				let processed: ImageData;
 				if (algorithmVersion === 'v1') {
-					processed = processImageBuffer(imgData, refStats as ColorStats, tgtStats as ColorStats, 35, 50, 0, debugOut);
+					processed = processImageBuffer(imgData, refStats as ColorStats, tgtStats as ColorStats, initialInternalIntensity, 50, 0, debugOut);
 				} else {
-					processed = processImageBufferV2(imgData, refStats as ColorStatsV2, tgtStats as ColorStatsV2, 35, 50, 0, debugOut);
+					processed = processImageBufferV2(imgData, refStats as ColorStatsV2, tgtStats as ColorStatsV2, initialInternalIntensity, 50, 0, debugOut);
 				}
 
 				// Draw to canvas to get URL
@@ -1253,7 +1278,7 @@ export default function ColorTransfer() {
 					name: targets[i].file.name,
 					originalUrl: targets[i].url,
 					resultUrl: canvas.toDataURL('image/jpeg', 0.9),
-					intensity: 35,
+					intensity: initialDisplayIntensity,
 					shadow: 50,
 					saturation: 0,
 					id: i,
@@ -1293,14 +1318,16 @@ export default function ColorTransfer() {
 			const currentShadow = resInfo?.shadow ?? 50;
 			const currentSaturation = resInfo?.saturation ?? 0;
 
+			const internalIntensity = mapDisplayToInternal(val);
+
 			// Re-process
 			const debugOut: { debugInfo?: DebugInfo } = {};
 			const imgData = previewCtx.getImageData(0, 0, previewWidth, previewHeight);
 			let processed: ImageData;
 			if (cachedAlg === 'v1') {
-				processed = processImageBuffer(imgData, refStats as ColorStats, tgtStats as ColorStats, val, currentShadow, currentSaturation, debugOut);
+				processed = processImageBuffer(imgData, refStats as ColorStats, tgtStats as ColorStats, internalIntensity, currentShadow, currentSaturation, debugOut);
 			} else {
-				processed = processImageBufferV2(imgData, refStats as ColorStatsV2, tgtStats as ColorStatsV2, val, currentShadow, currentSaturation, debugOut);
+				processed = processImageBufferV2(imgData, refStats as ColorStatsV2, tgtStats as ColorStatsV2, internalIntensity, currentShadow, currentSaturation, debugOut);
 			}
 
 			const canvas = document.createElement('canvas');
@@ -1324,7 +1351,8 @@ export default function ColorTransfer() {
 			if (!target || !imageCache.current[id]) return;
 
 			const { ctx: previewCtx, width: previewWidth, height: previewHeight, tgtStats, refStats, algorithmVersion: cachedAlg } = imageCache.current[id];
-			const currentIntensity = resInfo?.intensity ?? 35;
+			const currentIntensityDisplay = resInfo?.intensity ?? 50;
+			const currentIntensityInternal = mapDisplayToInternal(currentIntensityDisplay);
 			const currentShadow = resInfo?.shadow ?? 50;
 
 			// Re-process
@@ -1332,9 +1360,9 @@ export default function ColorTransfer() {
 			const imgData = previewCtx.getImageData(0, 0, previewWidth, previewHeight);
 			let processed: ImageData;
 			if (cachedAlg === 'v1') {
-				processed = processImageBuffer(imgData, refStats as ColorStats, tgtStats as ColorStats, currentIntensity, currentShadow, val, debugOut);
+				processed = processImageBuffer(imgData, refStats as ColorStats, tgtStats as ColorStats, currentIntensityInternal, currentShadow, val, debugOut);
 			} else {
-				processed = processImageBufferV2(imgData, refStats as ColorStatsV2, tgtStats as ColorStatsV2, currentIntensity, currentShadow, val, debugOut);
+				processed = processImageBufferV2(imgData, refStats as ColorStatsV2, tgtStats as ColorStatsV2, currentIntensityInternal, currentShadow, val, debugOut);
 			}
 
 			const canvas = document.createElement('canvas');
@@ -1359,7 +1387,8 @@ export default function ColorTransfer() {
 			if (!target || !imageCache.current[id]) return;
 
 			const { ctx: previewCtx, width: previewWidth, height: previewHeight, tgtStats, refStats, algorithmVersion: cachedAlg } = imageCache.current[id];
-			const currentIntensity = resInfo?.intensity ?? 35;
+			const currentIntensityDisplay = resInfo?.intensity ?? 50;
+			const currentIntensityInternal = mapDisplayToInternal(currentIntensityDisplay);
 			const currentSaturation = resInfo?.saturation ?? 0;
 
 			// Re-process
@@ -1367,9 +1396,9 @@ export default function ColorTransfer() {
 			const imgData = previewCtx.getImageData(0, 0, previewWidth, previewHeight);
 			let processed: ImageData;
 			if (cachedAlg === 'v1') {
-				processed = processImageBuffer(imgData, refStats as ColorStats, tgtStats as ColorStats, currentIntensity, val, currentSaturation, debugOut);
+				processed = processImageBuffer(imgData, refStats as ColorStats, tgtStats as ColorStats, currentIntensityInternal, val, currentSaturation, debugOut);
 			} else {
-				processed = processImageBufferV2(imgData, refStats as ColorStatsV2, tgtStats as ColorStatsV2, currentIntensity, val, currentSaturation, debugOut);
+				processed = processImageBufferV2(imgData, refStats as ColorStatsV2, tgtStats as ColorStatsV2, currentIntensityInternal, val, currentSaturation, debugOut);
 			}
 
 			const canvas = document.createElement('canvas');
@@ -1421,10 +1450,11 @@ export default function ColorTransfer() {
 				// Process FULL size with current intensity slider value
 				const imgData = tgtResized.ctx.getImageData(0, 0, tgtResized.width, tgtResized.height);
 				let processed: ImageData;
+				const internalIntensity = mapDisplayToInternal(res.intensity);
 				if (algorithmVersion === 'v1') {
-					processed = processImageBuffer(imgData, refStats as ColorStats, tgtStats as ColorStats, res.intensity, res.shadow, res.saturation);
+					processed = processImageBuffer(imgData, refStats as ColorStats, tgtStats as ColorStats, internalIntensity, res.shadow, res.saturation);
 				} else {
-					processed = processImageBufferV2(imgData, refStats as ColorStatsV2, tgtStats as ColorStatsV2, res.intensity, res.shadow, res.saturation);
+					processed = processImageBufferV2(imgData, refStats as ColorStatsV2, tgtStats as ColorStatsV2, internalIntensity, res.shadow, res.saturation);
 				}
 
 				const canvas = document.createElement('canvas');
@@ -1730,30 +1760,6 @@ export default function ColorTransfer() {
 
 			{/* Action Area */}
 			<div className="flex flex-col items-center justify-center gap-6 py-4">
-				
-				{/* Algorithm Version Toggle */}
-				<div className="flex items-center gap-2 bg-white/5 backdrop-blur-md p-1.5 rounded-2xl border border-white/10 shadow-xl">
-					<button
-						onClick={() => setAlgorithmVersion('v1')}
-						className={`px-6 py-2 rounded-xl text-sm font-semibold transition-all ${
-							algorithmVersion === 'v1' 
-							? 'bg-indigo-500 text-white shadow-md' 
-							: 'text-gray-400 hover:text-white hover:bg-white/5'
-						}`}
-					>
-						v1 (全体)
-					</button>
-					<button
-						onClick={() => setAlgorithmVersion('v2')}
-						className={`px-6 py-2 rounded-xl text-sm font-semibold transition-all ${
-							algorithmVersion === 'v2' 
-							? 'bg-indigo-500 text-white shadow-md' 
-							: 'text-gray-400 hover:text-white hover:bg-white/5'
-						}`}
-					>
-						v2 (帯域分割)
-					</button>
-				</div>
 
 				{errorMessage && (
 					<div className="bg-red-500/10 text-red-400 px-4 py-2 rounded-lg border border-red-500/20 text-sm">
@@ -1764,7 +1770,7 @@ export default function ColorTransfer() {
 				<button
 					onClick={executeColorTransfer}
 					disabled={!reference || targets.length === 0 || processStatus.isProcessing}
-					className="px-32 py-6 rounded-2xl font-bold text-2xl text-white shadow-2xl bg-indigo-600 hover:bg-indigo-500 transition-all transform hover:-translate-y-1 active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed disabled:transform-none whitespace-nowrap border border-white/10"
+					className="px-8 md:px-32 py-4 md:py-6 rounded-xl md:rounded-2xl font-bold text-lg md:text-2xl text-white shadow-2xl bg-indigo-600 hover:bg-indigo-500 transition-all transform hover:-translate-y-1 active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed disabled:transform-none whitespace-nowrap border border-white/10"
 				>
 					{processStatus.isProcessing ? (
 						<span className="flex items-center gap-3">
@@ -1809,9 +1815,95 @@ export default function ColorTransfer() {
 						)}
 					</div>
 
-					<div className="space-y-12 pb-8">
-						{results.map((res, i) => (
-							<div key={i} className="space-y-6 bg-white/5 backdrop-blur-md py-8 rounded-3xl border border-white/10 md:mx-4 shadow-2xl transition-all hover:bg-white/[0.07] hover:border-white/20">
+					<div className="flex flex-col md:flex-row relative items-start">
+						{/* Left Sidebar Panel (PC only) */}
+						{results.length >= 2 && reference && (
+							<div className="hidden md:flex flex-col w-[240px] shrink-0 sticky top-8 h-[calc(100vh-4rem)] overflow-y-auto px-6 border-r border-white/10" style={{ scrollbarWidth: 'none' }}>
+								<p className="text-xs font-bold text-gray-400 uppercase tracking-widest text-left mb-4">Reference</p>
+								<div className="relative w-full aspect-square rounded-xl overflow-hidden border-2 border-indigo-500/50 shadow-lg mb-8 shrink-0">
+									<img src={reference.url} className="w-full h-full object-cover" alt="Reference" />
+								</div>
+								
+								<p className="text-xs font-bold text-gray-400 uppercase tracking-widest text-left mb-4">{t.galleryTitle}</p>
+								<div className="flex flex-col gap-3 items-end pr-2 pb-8" ref={sidebarListRef}>
+									{results.map((res) => (
+										<button
+											key={`side-${res.id}`}
+											onClick={() => scrollToResultCard(res.id)}
+											data-thumb-id={res.id}
+											className={`relative w-24 h-24 shrink-0 rounded-xl overflow-hidden border transition-all shadow-lg group ${activeCardId === res.id ? 'border-indigo-400 border-2' : 'border-white/10 hover:border-indigo-400/60'}`}
+											title={res.name}
+										>
+											<img src={res.resultUrl} className="w-full h-full object-cover" alt={res.name} />
+											<span className={`absolute bottom-1 left-1 right-1 text-[9px] text-white/90 bg-black/50 backdrop-blur-sm rounded px-1 py-0.5 truncate transition-opacity ${activeCardId === res.id ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'}`}>
+												{res.name}
+											</span>
+										</button>
+									))}
+								</div>
+							</div>
+						)}
+
+						{/* Right Main Area */}
+						<div className="flex-1 w-full overflow-hidden">
+							{/* Mobile Gallery Floating Button & Drawer */}
+							{results.length >= 2 && reference && (
+								<>
+									{/* Toggle Button */}
+									<button
+										onClick={() => setIsMobileGalleryOpen(!isMobileGalleryOpen)}
+										className="md:hidden fixed bottom-24 right-4 z-50 bg-indigo-600/90 backdrop-blur-md text-white rounded-full p-4 shadow-[0_0_20px_rgba(79,70,229,0.3)] border border-white/20 flex items-center justify-center transition-transform hover:scale-105 active:scale-95"
+									>
+										<svg className={`w-6 h-6 transition-transform duration-300 ${isMobileGalleryOpen ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+											<path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16m-7 6h7" />
+										</svg>
+									</button>
+
+									{/* Drawer */}
+									<div className={`md:hidden fixed bottom-[5.5rem] left-4 right-[4.5rem] z-40 bg-[#0a0a0e]/95 backdrop-blur-2xl border border-white/10 rounded-2xl p-4 shadow-2xl transition-all duration-300 transform origin-bottom ${isMobileGalleryOpen ? 'scale-y-100 opacity-100 translate-y-0' : 'scale-y-95 opacity-0 translate-y-4 pointer-events-none'}`}>
+										<p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest text-left mb-3">{t.galleryTitle}</p>
+										<div className="flex items-center gap-3">
+											{/* お手本画像 (Reference) & 縦線 */}
+											<div className="flex items-center gap-3 shrink-0">
+												<div className="relative w-20 h-20 rounded-xl overflow-hidden border-2 border-indigo-500/50 shadow-lg">
+													<img src={reference.url} className="w-full h-full object-cover" alt="Reference" />
+													<span className="absolute bottom-0.5 left-0.5 right-0.5 text-[8px] text-white/90 bg-black/50 backdrop-blur-sm rounded px-1 py-0.5 truncate text-center">
+														Ref
+													</span>
+												</div>
+												<div className="h-16 w-[1px] bg-white/20"></div>
+											</div>
+
+											{/* 補正後画像群 (Scrollable) */}
+											<div className="flex gap-2 overflow-x-auto pb-2 flex-nowrap" style={{ scrollbarWidth: 'none' }} ref={mobileListRef}>
+												{results.map((res) => (
+													<button
+														key={`mob-${res.id}`}
+														onClick={() => scrollToResultCard(res.id)}
+														data-thumb-id={res.id}
+														className={`relative shrink-0 w-20 h-20 rounded-xl overflow-hidden border transition-all shadow-lg active:scale-95 group ${activeCardId === res.id ? 'border-indigo-400 border-2' : 'border-white/10'}`}
+														title={res.name}
+													>
+														<img src={res.resultUrl} className="w-full h-full object-cover" alt={res.name} />
+														<span className={`absolute bottom-0.5 left-0.5 right-0.5 text-[8px] text-white/90 bg-black/50 backdrop-blur-sm rounded px-1 py-0.5 truncate text-center transition-opacity ${activeCardId === res.id ? 'opacity-100' : 'opacity-0'}`}>
+															{res.name}
+														</span>
+													</button>
+												))}
+											</div>
+										</div>
+									</div>
+								</>
+							)}
+
+							<div className="space-y-12 pb-8">
+								{results.map((res, i) => (
+							<div
+								key={i}
+								ref={(el) => { cardRefs.current[res.id] = el; }}
+								data-card-id={res.id}
+								className={`space-y-6 bg-white/5 backdrop-blur-md py-8 rounded-3xl border transition-all shadow-2xl hover:bg-white/[0.07] scroll-mt-8 ${activeCardId === res.id ? 'border-indigo-500/50' : 'border-white/10 hover:border-white/20'} md:mx-4`}
+							>
 								<div className="flex justify-between items-center px-8">
 									<h4 className="text-gray-300 font-bold flex items-center gap-2">
 										<span className="w-6 h-6 rounded-full bg-white/10 flex items-center justify-center text-[10px] text-white/50 border border-white/10">{i + 1}</span>
@@ -1961,88 +2053,46 @@ export default function ColorTransfer() {
 												</div>
 											</div>
 
-											{/* V2 Band Statistics */}
-											{res.debugInfo.bandRatios && res.debugInfo.bandConfidences && (
+											{/* V2 Tone Curve Anchors */}
+											{res.debugInfo.toneCurveL && res.debugInfo.toneCurveC && (
 												<div className="pt-2 border-t border-white/10 space-y-2">
-													<p className="text-[10px] text-indigo-300 font-bold uppercase">V2 Band Statistics (Ratio / Blend to Mid)</p>
+													<p className="text-[10px] text-indigo-300 font-bold uppercase">V2 Tone Curve Anchors (In → Out / Slope)</p>
 													<table className="w-full text-[11px] border-collapse">
 														<thead>
 															<tr className="border-b border-white/5 text-gray-500 text-left">
-																<th className="py-1">Band</th>
-																<th className="py-1">L Shadow</th>
-																<th className="py-1">L Highlight</th>
-																<th className="py-1">C Shadow</th>
-																<th className="py-1">C Highlight</th>
+																<th className="py-1">#</th>
+																<th className="py-1">L In</th>
+																<th className="py-1">L Out</th>
+																<th className="py-1">L Slope</th>
+																<th className="py-1">C In</th>
+																<th className="py-1">C Out</th>
+																<th className="py-1">C Slope</th>
 															</tr>
 														</thead>
 														<tbody>
-															<tr className="border-b border-white/5">
-																<td className="py-1 font-bold">Pixel Ratio</td>
-																<td className={`py-1 ${(res.debugInfo.bandRatios.lShadow < MIN_BAND_PIXEL_RATIO) ? "text-red-400 font-bold" : ""}`}>
-																	{(res.debugInfo.bandRatios.lShadow * 100).toFixed(1)}%
-																</td>
-																<td className={`py-1 ${(res.debugInfo.bandRatios.lHighlight < MIN_BAND_PIXEL_RATIO) ? "text-red-400 font-bold" : ""}`}>
-																	{(res.debugInfo.bandRatios.lHighlight * 100).toFixed(1)}%
-																</td>
-																<td className={`py-1 ${(res.debugInfo.bandRatios.cShadow < MIN_BAND_PIXEL_RATIO) ? "text-red-400 font-bold" : ""}`}>
-																	{(res.debugInfo.bandRatios.cShadow * 100).toFixed(1)}%
-																</td>
-																<td className={`py-1 ${(res.debugInfo.bandRatios.cHighlight < MIN_BAND_PIXEL_RATIO) ? "text-red-400 font-bold" : ""}`}>
-																	{(res.debugInfo.bandRatios.cHighlight * 100).toFixed(1)}%
-																</td>
-															</tr>
-															<tr className="border-b border-white/5">
-																<td className="py-1 font-bold">Mid Blend</td>
-																<td className="py-1 text-orange-300">
-																	{((1 - res.debugInfo.bandConfidences.lShadow) * 100).toFixed(1)}%
-																</td>
-																<td className="py-1 text-orange-300">
-																	{((1 - res.debugInfo.bandConfidences.lHighlight) * 100).toFixed(1)}%
-																</td>
-																<td className="py-1 text-orange-300">
-																	{((1 - res.debugInfo.bandConfidences.cShadow) * 100).toFixed(1)}%
-																</td>
-																<td className="py-1 text-orange-300">
-																	{((1 - res.debugInfo.bandConfidences.cHighlight) * 100).toFixed(1)}%
-																</td>
-															</tr>
-														</tbody>
-													</table>
-												</div>
-											)}
-											
-											{/* V2 Band Coefficients */}
-											{res.debugInfo.bandCoeffs && (
-												<div className="pt-2 border-t border-white/10 space-y-2">
-													<p className="text-[10px] text-indigo-300 font-bold uppercase">V2 Band Coefficients (A / B)</p>
-													<table className="w-full text-[11px] border-collapse">
-														<thead>
-															<tr className="border-b border-white/5 text-gray-500 text-left">
-																<th className="py-1">Metric</th>
-																<th className="py-1">Shadow</th>
-																<th className="py-1">Mid</th>
-																<th className="py-1">Highlight</th>
-															</tr>
-														</thead>
-														<tbody>
-															<tr className="border-b border-white/5">
-																<td className="py-1 font-bold">L (A factor)</td>
-																<td className="py-1">{res.debugInfo.bandCoeffs.lShadow.A.toFixed(3)}</td>
-																<td className="py-1 font-bold text-indigo-300">{res.debugInfo.bandCoeffs.lMid.A.toFixed(3)}</td>
-																<td className="py-1">{res.debugInfo.bandCoeffs.lHighlight.A.toFixed(3)}</td>
-															</tr>
-															<tr className="border-b border-white/5">
-																<td className="py-1 font-bold">L (B factor)</td>
-																<td className="py-1">{res.debugInfo.bandCoeffs.lShadow.B.toFixed(3)}</td>
-																<td className="py-1 font-bold text-indigo-300">{res.debugInfo.bandCoeffs.lMid.B.toFixed(3)}</td>
-																<td className="py-1">{res.debugInfo.bandCoeffs.lHighlight.B.toFixed(3)}</td>
-															</tr>
-															<tr className="border-b border-white/5">
-																<td className="py-1 font-bold">C (A factor)</td>
-																<td className="py-1">{res.debugInfo.bandCoeffs.cShadow.toFixed(3)}</td>
-																<td className="py-1 font-bold text-indigo-300">{res.debugInfo.bandCoeffs.cMid.toFixed(3)}</td>
-																<td className="py-1">{res.debugInfo.bandCoeffs.cHighlight.toFixed(3)}</td>
-															</tr>
+															{res.debugInfo.toneCurveL.x.map((lx, idx) => {
+																const tcL = res.debugInfo!.toneCurveL!;
+																const tcC = res.debugInfo!.toneCurveC!;
+																const lSlope = tcL.slopes[idx];
+																const cSlope = tcC.slopes[idx];
+																const slopeClass = (s: number | undefined, min: number, max: number) =>
+																	s !== undefined && (s <= min + 0.01 || s >= max - 0.01) ? "text-red-400 font-bold" : "";
+																return (
+																	<tr key={idx} className="border-b border-white/5">
+																		<td className="py-1 font-bold">{idx}</td>
+																		<td className="py-1">{lx.toFixed(3)}</td>
+																		<td className="py-1 text-indigo-300">{tcL.y[idx].toFixed(3)}</td>
+																		<td className={`py-1 ${slopeClass(lSlope, L_SLOPE_MIN, tcL.cap)}`}>
+																			{lSlope !== undefined ? lSlope.toFixed(2) : '-'}
+																		</td>
+																		<td className="py-1">{tcC.x[idx] !== undefined ? tcC.x[idx].toFixed(3) : '-'}</td>
+																		<td className="py-1 text-indigo-300">{tcC.y[idx] !== undefined ? tcC.y[idx].toFixed(3) : '-'}</td>
+																		<td className={`py-1 ${slopeClass(cSlope, C_SLOPE_MIN, tcC.cap)}`}>
+																			{cSlope !== undefined ? cSlope.toFixed(2) : '-'}
+																		</td>
+																	</tr>
+																);
+															})}
 														</tbody>
 													</table>
 												</div>
@@ -2052,13 +2102,14 @@ export default function ColorTransfer() {
 								)}
 
 								{/* Slider Control */}
-								<div className="max-w-[800px] mx-auto w-full px-4 md:px-8">
-									<div className="bg-black/20 rounded-2xl p-4 md:p-6 border border-white/5">
-										<div className="flex justify-between items-center mb-4">
-											<span className="text-[10px] md:text-xs font-bold text-gray-400 uppercase tracking-widest leading-none">Adjustment Intensity</span>
-										</div>
+								<div className="max-w-[1000px] mx-auto w-full px-4 md:px-8">
+									<div className="bg-black/20 rounded-2xl p-4 md:p-6 border border-white/5 grid grid-cols-1 md:grid-cols-3 gap-6 md:gap-8">
+										{/* Intensity */}
 										<div className="flex flex-col gap-3">
-											<div className="flex justify-between text-[10px] text-gray-500 font-bold uppercase tracking-tighter px-1">
+											<div className="flex justify-between items-center">
+												<span className="text-[10px] md:text-xs font-bold text-gray-400 uppercase tracking-widest leading-none">{t.sliderIntensity}</span>
+											</div>
+											<div className="flex justify-between text-[10px] text-gray-500 font-bold uppercase tracking-tighter px-1 mt-1">
 												<span>{t.labelOriginal}</span>
 												<span className="text-indigo-400/80">{t.labelStandard}</span>
 												<span>{t.labelIntense}</span>
@@ -2072,18 +2123,19 @@ export default function ColorTransfer() {
 													onChange={(e) => handleIntensityChange(i, parseInt(e.target.value))}
 													className="flex-1 h-1.5 bg-white/10 rounded-full appearance-none cursor-pointer accent-indigo-500 hover:accent-indigo-400 transition-all"
 												/>
-												<span className="w-10 text-right font-mono text-indigo-400 text-sm font-bold">{res.intensity}</span>
+												<span className="w-8 text-right font-mono text-indigo-400 text-sm font-bold">{res.intensity}</span>
 											</div>
 										</div>
 
-										<div className="flex justify-between items-center mt-6 mb-4">
-											<span className="text-[10px] md:text-xs font-bold text-gray-400 uppercase tracking-widest leading-none">Saturation</span>
-										</div>
-										<div className="flex flex-col gap-3">
-											<div className="flex justify-between text-[10px] text-gray-500 font-bold uppercase tracking-tighter px-1">
-												<span>-50 (Desaturate)</span>
-												<span className="text-indigo-400/80">0 (Auto)</span>
-												<span>+50 (Saturate)</span>
+										{/* Saturation */}
+										<div className="flex flex-col gap-3 mt-4 md:mt-0 pt-4 md:pt-0 border-t md:border-t-0 border-white/5 md:border-l md:border-white/10 md:pl-8">
+											<div className="flex justify-between items-center">
+												<span className="text-[10px] md:text-xs font-bold text-gray-400 uppercase tracking-widest leading-none">{t.sliderSaturation}</span>
+											</div>
+											<div className="flex justify-between text-[10px] text-gray-500 font-bold uppercase tracking-tighter px-1 mt-1">
+												<span>-50</span>
+												<span className="text-indigo-400/80">0</span>
+												<span>+50</span>
 											</div>
 											<div className="flex items-center gap-4">
 												<input
@@ -2094,18 +2146,19 @@ export default function ColorTransfer() {
 													onChange={(e) => handleSaturationChange(i, parseInt(e.target.value))}
 													className="flex-1 h-1.5 bg-white/10 rounded-full appearance-none cursor-pointer accent-indigo-500 hover:accent-indigo-400 transition-all"
 												/>
-												<span className="w-10 text-right font-mono text-indigo-400 text-sm font-bold">{res.saturation > 0 ? `+${res.saturation}` : res.saturation}</span>
+												<span className="w-8 text-right font-mono text-indigo-400 text-sm font-bold">{res.saturation > 0 ? `+${res.saturation}` : res.saturation}</span>
 											</div>
 										</div>
 
-										<div className="flex justify-between items-center mt-6 mb-4">
-											<span className="text-[10px] md:text-xs font-bold text-gray-400 uppercase tracking-widest leading-none">Shadow</span>
-										</div>
-										<div className="flex flex-col gap-3">
-											<div className="flex justify-between text-[10px] text-gray-500 font-bold uppercase tracking-tighter px-1">
-												<span>0 (Soft)</span>
-												<span className="text-indigo-400/80">50 (Standard)</span>
-												<span>100 (Crush)</span>
+										{/* Shadow */}
+										<div className="flex flex-col gap-3 mt-4 md:mt-0 pt-4 md:pt-0 border-t md:border-t-0 border-white/5 md:border-l md:border-white/10 md:pl-8">
+											<div className="flex justify-between items-center">
+												<span className="text-[10px] md:text-xs font-bold text-gray-400 uppercase tracking-widest leading-none">{t.sliderShadow}</span>
+											</div>
+											<div className="flex justify-between text-[10px] text-gray-500 font-bold uppercase tracking-tighter px-1 mt-1">
+												<span>0</span>
+												<span className="text-indigo-400/80">50</span>
+												<span>100</span>
 											</div>
 											<div className="flex items-center gap-4">
 												<input
@@ -2116,15 +2169,17 @@ export default function ColorTransfer() {
 													onChange={(e) => handleShadowChange(i, parseInt(e.target.value))}
 													className="flex-1 h-1.5 bg-white/10 rounded-full appearance-none cursor-pointer accent-indigo-500 hover:accent-indigo-400 transition-all"
 												/>
-												<span className="w-10 text-right font-mono text-indigo-400 text-sm font-bold">{res.shadow}</span>
+												<span className="w-8 text-right font-mono text-indigo-400 text-sm font-bold">{res.shadow}</span>
 											</div>
 										</div>
 									</div>
 								</div>
 							</div>
 						))}
+							</div>
+							<div className="h-4" />
+						</div>
 					</div>
-					<div className="h-40" />
 				</div>
 			)}
 

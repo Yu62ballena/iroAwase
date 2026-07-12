@@ -12,7 +12,7 @@ export default function Home() {
         <ColorTransfer />
       </div>
 
-      <footer className="mt-16 text-gray-600 text-sm pb-8">
+      <footer className="mt-2 text-gray-600 text-sm pb-20">
         <p>© 2025 Antigravity Color Tool. Client-side processing only.</p>
       </footer>
     </main>
