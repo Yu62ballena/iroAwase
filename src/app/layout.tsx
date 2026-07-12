@@ -67,8 +67,28 @@ export default function RootLayout({
 }: Readonly<{
   children: React.ReactNode;
 }>) {
+  const jsonLd = {
+    "@context": "https://schema.org",
+    "@type": "SoftwareApplication",
+    "name": "iroAwase",
+    "applicationCategory": "PhotographyApplication",
+    "operatingSystem": "Web",
+    "offers": {
+      "@type": "Offer",
+      "price": "0",
+      "priceCurrency": "JPY"
+    },
+    "description": "お気に入りの写真の色調を、あなたの写真へ瞬時にコピー。ブラウザ内で処理が完結し、画像はサーバーに送信されません。"
+  };
+
   return (
     <html lang="ja">
+      <head>
+        <script
+          type="application/ld+json"
+          dangerouslySetInnerHTML={{ __html: JSON.stringify(jsonLd) }}
+        />
+      </head>
       <body className={`${geistSans.variable} ${geistMono.variable} ${comfortaa.variable}`}>
         {children}
         <Analytics />

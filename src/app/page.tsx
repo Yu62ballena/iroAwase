@@ -13,7 +13,7 @@ export default function Home() {
       </div>
 
       <footer className="mt-2 text-gray-600 text-sm pb-20">
-        <p>© 2025 Antigravity Color Tool. Client-side processing only.</p>
+        <p>© 2026 iroAwase | Code Atelier Yu</p>
       </footer>
     </main>
   );
