@@ -144,6 +144,14 @@ const TRANSLATIONS = {
 
 // --- Helper Functions ---
 
+const mapDisplayToInternal = (x: number): number => {
+	if (x <= 50) {
+		return x * 0.7; // 0->0, 50->35
+	} else {
+		return 35 + (x - 50) * 1.3; // 50->35, 100->100
+	}
+};
+
 const loadImage = (src: string): Promise<HTMLImageElement> => {
 	return new Promise((resolve, reject) => {
 		const img = new Image();
@@ -1246,14 +1254,17 @@ export default function ColorTransfer() {
 					algorithmVersion: algorithmVersion
 				};
 
-				// 3. Process initial result (Intensity 35)
+				// 3. Process initial result (Intensity 35 - 内部値)
+				const initialDisplayIntensity = 50;
+				const initialInternalIntensity = mapDisplayToInternal(initialDisplayIntensity); // = 35
+
 				const debugOut: { debugInfo?: DebugInfo } = {};
 				const imgData = previewResized.ctx.getImageData(0, 0, previewResized.width, previewResized.height);
 				let processed: ImageData;
 				if (algorithmVersion === 'v1') {
-					processed = processImageBuffer(imgData, refStats as ColorStats, tgtStats as ColorStats, 35, 50, 0, debugOut);
+					processed = processImageBuffer(imgData, refStats as ColorStats, tgtStats as ColorStats, initialInternalIntensity, 50, 0, debugOut);
 				} else {
-					processed = processImageBufferV2(imgData, refStats as ColorStatsV2, tgtStats as ColorStatsV2, 35, 50, 0, debugOut);
+					processed = processImageBufferV2(imgData, refStats as ColorStatsV2, tgtStats as ColorStatsV2, initialInternalIntensity, 50, 0, debugOut);
 				}
 
 				// Draw to canvas to get URL
@@ -1267,7 +1278,7 @@ export default function ColorTransfer() {
 					name: targets[i].file.name,
 					originalUrl: targets[i].url,
 					resultUrl: canvas.toDataURL('image/jpeg', 0.9),
-					intensity: 35,
+					intensity: initialDisplayIntensity,
 					shadow: 50,
 					saturation: 0,
 					id: i,
@@ -1307,14 +1318,16 @@ export default function ColorTransfer() {
 			const currentShadow = resInfo?.shadow ?? 50;
 			const currentSaturation = resInfo?.saturation ?? 0;
 
+			const internalIntensity = mapDisplayToInternal(val);
+
 			// Re-process
 			const debugOut: { debugInfo?: DebugInfo } = {};
 			const imgData = previewCtx.getImageData(0, 0, previewWidth, previewHeight);
 			let processed: ImageData;
 			if (cachedAlg === 'v1') {
-				processed = processImageBuffer(imgData, refStats as ColorStats, tgtStats as ColorStats, val, currentShadow, currentSaturation, debugOut);
+				processed = processImageBuffer(imgData, refStats as ColorStats, tgtStats as ColorStats, internalIntensity, currentShadow, currentSaturation, debugOut);
 			} else {
-				processed = processImageBufferV2(imgData, refStats as ColorStatsV2, tgtStats as ColorStatsV2, val, currentShadow, currentSaturation, debugOut);
+				processed = processImageBufferV2(imgData, refStats as ColorStatsV2, tgtStats as ColorStatsV2, internalIntensity, currentShadow, currentSaturation, debugOut);
 			}
 
 			const canvas = document.createElement('canvas');
@@ -1338,7 +1351,8 @@ export default function ColorTransfer() {
 			if (!target || !imageCache.current[id]) return;
 
 			const { ctx: previewCtx, width: previewWidth, height: previewHeight, tgtStats, refStats, algorithmVersion: cachedAlg } = imageCache.current[id];
-			const currentIntensity = resInfo?.intensity ?? 35;
+			const currentIntensityDisplay = resInfo?.intensity ?? 50;
+			const currentIntensityInternal = mapDisplayToInternal(currentIntensityDisplay);
 			const currentShadow = resInfo?.shadow ?? 50;
 
 			// Re-process
@@ -1346,9 +1360,9 @@ export default function ColorTransfer() {
 			const imgData = previewCtx.getImageData(0, 0, previewWidth, previewHeight);
 			let processed: ImageData;
 			if (cachedAlg === 'v1') {
-				processed = processImageBuffer(imgData, refStats as ColorStats, tgtStats as ColorStats, currentIntensity, currentShadow, val, debugOut);
+				processed = processImageBuffer(imgData, refStats as ColorStats, tgtStats as ColorStats, currentIntensityInternal, currentShadow, val, debugOut);
 			} else {
-				processed = processImageBufferV2(imgData, refStats as ColorStatsV2, tgtStats as ColorStatsV2, currentIntensity, currentShadow, val, debugOut);
+				processed = processImageBufferV2(imgData, refStats as ColorStatsV2, tgtStats as ColorStatsV2, currentIntensityInternal, currentShadow, val, debugOut);
 			}
 
 			const canvas = document.createElement('canvas');
@@ -1373,7 +1387,8 @@ export default function ColorTransfer() {
 			if (!target || !imageCache.current[id]) return;
 
 			const { ctx: previewCtx, width: previewWidth, height: previewHeight, tgtStats, refStats, algorithmVersion: cachedAlg } = imageCache.current[id];
-			const currentIntensity = resInfo?.intensity ?? 35;
+			const currentIntensityDisplay = resInfo?.intensity ?? 50;
+			const currentIntensityInternal = mapDisplayToInternal(currentIntensityDisplay);
 			const currentSaturation = resInfo?.saturation ?? 0;
 
 			// Re-process
@@ -1381,9 +1396,9 @@ export default function ColorTransfer() {
 			const imgData = previewCtx.getImageData(0, 0, previewWidth, previewHeight);
 			let processed: ImageData;
 			if (cachedAlg === 'v1') {
-				processed = processImageBuffer(imgData, refStats as ColorStats, tgtStats as ColorStats, currentIntensity, val, currentSaturation, debugOut);
+				processed = processImageBuffer(imgData, refStats as ColorStats, tgtStats as ColorStats, currentIntensityInternal, val, currentSaturation, debugOut);
 			} else {
-				processed = processImageBufferV2(imgData, refStats as ColorStatsV2, tgtStats as ColorStatsV2, currentIntensity, val, currentSaturation, debugOut);
+				processed = processImageBufferV2(imgData, refStats as ColorStatsV2, tgtStats as ColorStatsV2, currentIntensityInternal, val, currentSaturation, debugOut);
 			}
 
 			const canvas = document.createElement('canvas');
@@ -1435,10 +1450,11 @@ export default function ColorTransfer() {
 				// Process FULL size with current intensity slider value
 				const imgData = tgtResized.ctx.getImageData(0, 0, tgtResized.width, tgtResized.height);
 				let processed: ImageData;
+				const internalIntensity = mapDisplayToInternal(res.intensity);
 				if (algorithmVersion === 'v1') {
-					processed = processImageBuffer(imgData, refStats as ColorStats, tgtStats as ColorStats, res.intensity, res.shadow, res.saturation);
+					processed = processImageBuffer(imgData, refStats as ColorStats, tgtStats as ColorStats, internalIntensity, res.shadow, res.saturation);
 				} else {
-					processed = processImageBufferV2(imgData, refStats as ColorStatsV2, tgtStats as ColorStatsV2, res.intensity, res.shadow, res.saturation);
+					processed = processImageBufferV2(imgData, refStats as ColorStatsV2, tgtStats as ColorStatsV2, internalIntensity, res.shadow, res.saturation);
 				}
 
 				const canvas = document.createElement('canvas');
