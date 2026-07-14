@@ -1562,7 +1562,7 @@ export default function ColorTransfer() {
 						{/* Section 1: App Info */}
 						<div className="space-y-3">
 							<div className="flex items-center gap-3">
-								<img src="/logo.png" alt="iroAwase" className="w-8 h-8 object-contain" />
+								<img src={`${process.env.NEXT_PUBLIC_BASE_PATH || ""}/logo.png`} alt="iroAwase" className="w-8 h-8 object-contain" />
 								<h2 className="text-2xl font-bold text-white leading-none tracking-tight" style={{ fontFamily: 'var(--font-comfortaa)' }}>iroAwase</h2>
 							</div>
 							<p className="text-[10px] text-indigo-400 font-bold uppercase tracking-widest">v1.2</p>
@@ -1582,7 +1582,7 @@ export default function ColorTransfer() {
 							>
 								<div className="flex items-center gap-4 mb-3">
 									<div className="w-10 h-10 bg-white/5 rounded-xl flex items-center justify-center p-2 group-hover:scale-110 transition-transform">
-										<img src="/karukusuru-logo.png" alt="karukuSuru" className="w-full h-full object-contain" />
+										<img src={`${process.env.NEXT_PUBLIC_BASE_PATH || ""}/karukusuru-logo.png`} alt="karukuSuru" className="w-full h-full object-contain" />
 									</div>
 									<div>
 										<p className="text-white font-bold group-hover:text-indigo-400 transition-colors">karukuSuru</p>
@@ -1658,7 +1658,7 @@ export default function ColorTransfer() {
 						setShowDebugPanel(prev => !prev);
 					}}
 				>
-					<img src="/logo.png" alt="iroAwase Logo" className="h-10 w-10 md:h-16 md:w-16 object-contain" />
+					<img src={`${process.env.NEXT_PUBLIC_BASE_PATH || ""}/logo.png`} alt="iroAwase Logo" className="h-10 w-10 md:h-16 md:w-16 object-contain" />
 					<h1 className="text-3xl md:text-5xl text-white tracking-wider pb-1" style={{ fontFamily: 'var(--font-comfortaa)' }}>
 						iroAwase
 					</h1>
